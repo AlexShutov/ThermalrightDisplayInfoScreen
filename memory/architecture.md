@@ -47,6 +47,26 @@ on the display host; a remote producer crashing never kills the dashboard (last 
 - **Variant A: Qt adapter** — theme video plays as background, Qt draws overlay, frame handed to
   `background`. Static-JPEG fallback is not the target (loses live cloud themes).
 
+## Composite mechanism (verified from trcc source)
+- `host.background.show(key, FrameSource, fps)` makes the module's source the panel's background:
+  the App dispatches `StopVideo` (theme video STOPS), saves the choice, opens the module source, and a
+  `SourceDriver` (interval `1/fps`) runs `CaptureSourceFrame` -> `source.latest()` each tick,
+  compositing the theme's mask + metrics on top, and sends. (`app.py:571-584`, `services/source_driver.py`)
+- `host.background.end(key)` closes the source, stops the driver, and `PlayVideo(path)` resumes the
+  theme's own video. (`app.py:586-602`)
+- FrameSource port (`ports.py:2558`): `latest() -> RawFrame` ("CaptureNotReady" while starting,
+  `OSError` on permanent failure), `close()`; module draws on its own thread, keeps only newest.
+- Capabilities gate: module must declare a capability in `module.json` to reach `host.*`; undeclared -
+  `ModuleScope._need` raises (e.g. "Stub asked for 'panels' without declaring it").
+- Behaviors that matter for us: with `background.show` the module's source REPLACES the theme's video
+  as the background (video stops); the App puts the theme's mask + metrics on top. So "live theme video
+  under our overlay" is NOT what `background.show` gives by itself -- the module's FrameSource must
+  draw the composite, optionally decoding the theme MP4 (ffmpeg) as its base.
+- The supported lifecycle matches our plan: no data -> `background.end` (theme video plays); data -> 
+  `background.show` (our Qt dashboard becomes the background; theme mask/metrics composited on top).
+  If we want the theme video visible under the dashboard even in data-present mode, the module's
+  FrameSource re-decodes the theme MP4 as its base and draws the Qt overlay on top.
+
 ## Adapter data / day-night style
 - Adapter reads bridge state (setup + values + palette), draws gauges. Day/night palette arrives via
   `/settings` -> manager -> bridge; style switch without module restart.
@@ -61,6 +81,22 @@ on the display host; a remote producer crashing never kills the dashboard (last 
 Every phase is gated by its tests, run on a fake device — no hardware needed. Core logic is pure
 Python behind injectable ports; frameworks (Qt/FastAPI/trcc) are adapters only at the edges. Full
 strategy + concrete rules: `memory/testing.md`.
+
+## Phase 0 — validated on hardware (macOS, Trofeo 11.3)
+- Module FrameSource cycle PROVEN: probe module (key `probe`, in `dev/trcc-module-probe/`)
+  `_enable` -> `host.background.show(key, source, 15.0)`. Verified in the daemon log:
+  `show_source: 0416:5408 <- probe.pattern (probe, 15 fps)` -> `SourceDriver: every 67 ms`
+  -> `probe: showing pattern on 0416:5408 (1920x440) at 15 fps`; `trcc status` -> `showing: the Probe module`.
+- `host.background.end(key)` restores the theme: `end_source` -> `probe: ended -> theme restored`
+  (`showing: the theme's background`). The probe is currently turned OFF (clean state).
+- **Robustness gap found:** module `_enable` can run BEFORE the panel is attached (at daemon startup
+  the device is still enumerating), so `host.panels.attached()` may be EMPTY and `background.show`
+  cannot run; our naive probe just warns and returns. The real adapter MUST defer `background.show`
+  until a panel is present -- subscribe to the panel-attach/`PanelChanged`-style event, or have the
+  MANAGER (which knows when it asked trcc to load a theme for the panel) signal the module when to show.
+- Composite (user chose option 1): theme video decodes (ffmpeg) as the module's base + Qt overlay on
+  top, served via the FrameSource. The probe uses a plain RGB24 pattern to prove the cycle; the
+  base-video decode + Qt overlay are the next refinement on this same seam.
 
 ## Open questions (NOT yet decided — a new session must treat these as open, not assumed)
 - **File layout:** where the new code lives. Candidates: a new installable package (e.g.
