@@ -213,14 +213,14 @@ class DockToggle(QPushButton):
         painter.drawRoundedRect(rect, 6, 6)
         direction = 1.0 - 2.0 * self._arrow
         cx, cy = w / 2.0, h / 2.0
-        arm_x = min(6.0, w / 3.0)
-        arm_y = 8.0
+        arm_x = min(4.5, w / 3.5)
+        arm_y = 5.5
         path = QPainterPath()
         path.moveTo(cx - direction * arm_x, cy - arm_y)
         path.lineTo(cx + direction * arm_x, cy)
         path.lineTo(cx - direction * arm_x, cy + arm_y)
         pen = QPen(QColor("#dfe4ef"))
-        pen.setWidthF(2.5)
+        pen.setWidthF(2.0)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
