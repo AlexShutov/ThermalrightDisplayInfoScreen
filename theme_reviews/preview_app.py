@@ -112,7 +112,7 @@ def _row_matches(key: str, row: dict | None) -> bool:
     """
     if key == "all":
         return True
-    if row is None:
+    if row is None or row.get("is_dark") is None:
         return False
     dark = row["is_dark"] == 1
     flash = row["has_flash"] == 1
