@@ -57,6 +57,11 @@ on the display host; a remote producer crashing never kills the dashboard (last 
 - On start: `POST /dashboard/setup`, then random `update`s and random `/theme` mode switches.
   Separate service; enough for development.
 
+## Testing (reused from trcc)
+Every phase is gated by its tests, run on a fake device — no hardware needed. Core logic is pure
+Python behind injectable ports; frameworks (Qt/FastAPI/trcc) are adapters only at the edges. Full
+strategy + concrete rules: `memory/testing.md`.
+
 ## Open questions (NOT yet decided — a new session must treat these as open, not assumed)
 - **File layout:** where the new code lives. Candidates: a new installable package (e.g.
   `src/manager/` + a separate console command), alongside the existing `src/trofeo/`. Not chosen.

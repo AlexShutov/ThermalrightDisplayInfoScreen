@@ -16,6 +16,14 @@ Auto-loaded into context. Keep the index <= ~200 lines; detail lives in the link
   BackgroundKind, frames.watch, capability gate, install steps, our stub module.
 - **`architecture.md`** — Theme Manager decision record: two planes, FastAPI+uvicorn, atomic
   state-file bridge with `seq`, API contract, render lifecycle, Qt adapter (variant A), day/night style.
+- **`testing.md`** — testing strategy reused from trcc: injectable ports (FrameSink/SensorSource/
+  TrccBackground/StateStore), MockPanel + fake transport, pytest `tests/` + `dev/` smoke harnesses,
+  coverage ratchet, verify-by-run.
+- **`trcc_borrowed.md`** — catalog of trcc design ideas we adapt (design only, NEVER copied GPL code):
+  download/install pipeline, errno-classified retry/backoff, last-command-wins sender, atomic+versioned
+  settings, multi-process logging, health/report, daemon/IPC lifecycle, module installer, sensor
+  self-guarding, safe file/JSON helpers, FastAPI/pydantic patterns, single-broadcast merge, small utils.
+  FOLLOW THESE during development.
 - **`conventions.md`** — code/style, licenses (MIT ours / GPL-3.0 external), git/commit policy, repo.
 
 ## Live state

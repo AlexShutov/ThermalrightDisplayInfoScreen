@@ -12,8 +12,13 @@ Memory system just rebuilt to match trcc's structure (SESSION / MEMORY-index + t
 sessions archive). This is the start of Phase 0.
 
 ## Plan (phase list)
+- **Cross-cutting: Test foundation (trcc style).** Injectable ports (FrameSink/SensorSource/
+  TrccBackground/StateStore) + MockPanel + fake transport, pytest `tests/` + `dev/` smoke harness,
+  coverage ratchet. Every phase is done only when its tests pass on the fake device. See
+  `memory/testing.md`. Set up FIRST (alongside Phase 0).
 - **Phase 0 — Validate composite on top of theme (macOS).** Qt module draws a translucent overlay on
-  top of the theme background -> frame to panel. Proves "theme under Qt overlay -> frame". NEXT.
+  top of the theme background -> frame to panel. Proves "theme under Qt overlay -> frame". NEXT
+  (stand up ports + MockPanel + pytest scaffolding first).
 - **Phase 1 — Manager framework (24/7).** FastAPI+uvicorn (1 worker, body-size limit, timeouts),
   endpoints `/health, /dashboard/setup, /dashboard/update, /settings, /theme`, state manager, atomic
   state-file bridge with `seq`. Bind `127.0.0.1`; LAN bind + optional bearer token via config.
@@ -32,13 +37,25 @@ sessions archive). This is the start of Phase 0.
 - Hardware: dev+runtime macOS; Pi 5 present (use it), Pi 3 Model B around, Pi Zero/Zero 2 W out,
   Orange Pi 6 Plus future. Platform specifics behind `config.py`.
 
+## Design borrowings to follow (trcc, adaptation only)
+Applied during development per `memory/trcc_borrowed.md`: staged atomic downloads + safe fetch,
+errno-classified reconnect/backoff, last-command-wins single-slot sender, fsync'd + schema-versioned
+persistence, one multi-process rotating log (RenderOnce + per_frame + ClassContextFilter), health-probe
+registry + whole-log report, daemon/IPC lifecycle (AppLock, ensure_daemon never-downgrade, "handler
+must not kill the owner"), module install trust chain (consent-match + atomic swap + rollback gate),
+sensor self-guard + unsupported() withholding, safe JSON/path helpers, projection/constraint pydantic
+models, single-broadcast merge, Blob/per_frame/recurring_warning utils.
+
 ## Open questions (this run)
 File layout for new code, manager->trcc mechanism (CLI trigger vs trcc API), Qt render specifics
 (QPainter vs QML). Details in `architecture.md` -> "Open questions". Do NOT assume these are chosen.
 
 ## Next action
+- Stand up the **test foundation first**: introduce the injectable ports (FrameSink/SensorSource/
+  TrccBackground/StateStore), a `MockPanel` + fake transport, pytest scaffolding (`tests/`),
+  and the fastapi TestClient + fakes — then begin Phase 0.
 - Read trcc API for `FrameSource`/`background.show/end`/`host.frames.watch`, confirm the frame cycle
-  (theme background + Qt overlay -> panel), then write the phase list into todowrite and begin Phase 0.
+  (theme background + Qt overlay -> panel), then write the phase list into todowrite and begin.
 
 ## Handoff notes
 - USB access denied for trcc daemon -> a `trofeo run`/`supervise` client holds the device; stop it.
