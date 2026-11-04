@@ -46,8 +46,13 @@ A **portable, self-contained app** that drives the **Thermalright Trofeo Vision 
   - `sensors.py` — CPU/GPU/RAM/temp/disk/net collection (psutil).
   - `config.py` — YAML-first config.
 - **Optional engine** `trcc-linux` (a ready Control Center, **GPL-3.0**) for advanced themes/video.
-  The thin client can drive it, or fall back to `ly.py`. `trcc-linux` also has **no** USB reconnect
-  and a frame-size guard to verify — that is why we layer our own supervisor/renderer on top.
+  The thin client can drive it, or fall back to `ly.py`. On real hardware (9.12.0, macOS dev) it
+  detects `0416:5408`, connects as **Trofeo Vision 11.3, 1920×440, model_id 69** (cross-validates our
+  handshake/PM=69) and sends frames. The **persistent engine is `trcc daemon`** (owns USB, serves the
+  IPC socket, renders + keeps the panel updated) — so the supervisor wraps `.../trcc daemon`. The
+  one-shot commands (`display play`, `display load-image`, `display serve`) are **triggers** that
+  auto-start the daemon when none is running, and are NOT standalone long-running engine processes.
+  We still layer our own supervisor on top so USB reconnect is our responsibility.
 
 ## Repository-Specific Conventions
 

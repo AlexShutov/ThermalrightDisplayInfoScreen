@@ -32,7 +32,7 @@ Wrap an external engine (ready made Control Center, GPL-3.0, optional):
 
 ```bash
 pip install .[trcc]             # optional: trcc-linux
-trofeo supervise --cmd trcc display serve
+trofeo supervise --cmd trcc daemon   # persistent engine (owns USB, renders + keepalive)
 ```
 
 ## Deploy on Linux (Raspberry Pi / Orange Pi)
