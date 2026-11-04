@@ -646,8 +646,8 @@ class PreviewApp(QWidget):
 
     def _build_dock_panel(self) -> None:
         self._dock_open = False
-        self._dock_anim = None
-        self._dock_tiles = {}
+        self._dock_anim: QPropertyAnimation | None = None
+        self._dock_tiles: dict[str, FavoriteTile] = {}
         self._dock_panel = QWidget(self)
         self._dock_panel.setObjectName("dock")
         self._dock_panel.setStyleSheet(
@@ -695,26 +695,42 @@ class PreviewApp(QWidget):
         self._dock_anim.start()
 
     def _refresh_dock(self) -> None:
+        current = self.themes[self.index][0] if self.themes else None
         show = [tid for tid in self._fav if _row_matches(self._filter, self._meta.get(tid))]
         for tid in show:
             if tid not in self._dock_tiles:
-                self._dock_tiles[tid] = FavoriteTile(tid, self.thumb_dir)
+                tile = FavoriteTile(tid, self.thumb_dir)
+                tile.clicked.connect(self._on_tile_clicked)
+                self._dock_tiles[tid] = tile
         while self._favs_grid.count():
             item = self._favs_grid.takeAt(0)
             if item.widget() is not None:
                 item.widget().hide()
         for i, tid in enumerate(show):
-            self._favs_grid.addWidget(self._dock_tiles[tid], i // DOCK_COLS, i % DOCK_COLS)
-            self._dock_tiles[tid].show()
+            tile = self._dock_tiles[tid]
+            tile.set_selected(tid == current)
+            self._favs_grid.addWidget(tile, i // DOCK_COLS, i % DOCK_COLS)
+            tile.show()
         for tid, tile in self._dock_tiles.items():
             if tid not in show:
                 tile.hide()
+
+    def _on_tile_clicked(self, tid: str) -> None:
+        for i, (t, _cat) in enumerate(self.themes):
+            if t == tid:
+                if i != self.index:
+                    self.index = i
+                    self._refresh()
+                else:
+                    self._refresh_dock()
+                return
 
     def _refresh(self, load_panel: bool = True) -> None:
         tid, cat = self.themes[self.index]
         self._preview_index(self.index)
         self._sync_slider()
         save_state(tid)
+        self._refresh_dock()
         if load_panel:
             self._load_panel(tid)
 
@@ -841,12 +857,15 @@ class PreviewApp(QWidget):
 
     def like(self) -> None:
         self.like_key.flash()
+        if not self.themes:
+            return
         tid = self.themes[self.index][0]
         if tid not in self.fav:
             self._fav.append(tid)
             self.fav.add(tid)
             save_favorites(FAVORITES, self._fav, dict(self.themes))
         self._update_mark(tid)
+        self._refresh_dock()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.isAutoRepeat():
