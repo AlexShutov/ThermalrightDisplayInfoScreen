@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS themes (
     error TEXT,
     downloaded_at TEXT,
     analyzed_at TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    brightness INTEGER DEFAULT 100
 );
 CREATE TABLE IF NOT EXISTS queue (
     tid TEXT PRIMARY KEY,
@@ -61,7 +62,18 @@ def connect() -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    _migrate_brightness(conn)
     conn.commit()
+
+
+def _migrate_brightness(conn: sqlite3.Connection) -> None:
+    """Add the ``brightness`` column to existing DBs (idempotent)."""
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(themes)")}
+        if "brightness" not in cols:
+            conn.execute("ALTER TABLE themes ADD COLUMN brightness INTEGER DEFAULT 100")
+    except sqlite3.Error:
+        pass
 
 
 def media_rel_path(tid: str) -> str:
@@ -96,6 +108,44 @@ def is_ready(row: dict, theme_root: str = THEMES_ROOT) -> bool:
     # rel_path is 'themes/<id>/<id>.mp4', THEMES_ROOT is '<HERE>/themes',
     # so the file lives at dirname(THEMES_ROOT)/rel_path.
     return os.path.exists(os.path.join(os.path.dirname(theme_root), rel))
+
+
+def get_brightness(tid: str) -> int:
+    """Saved brightness (0..150) for *tid*, or 100 when missing/None.  Never raises."""
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return 100
+    try:
+        row = conn.execute(
+            "SELECT brightness FROM themes WHERE id=?", (tid,)
+        ).fetchone()
+    except sqlite3.Error:
+        return 100
+    finally:
+        conn.close()
+    if row is None or row["brightness"] is None:
+        return 100
+    return int(row["brightness"])
+
+
+def set_brightness(tid: str, pct: int) -> None:
+    """Upsert a brightness-only row for *tid*.  Never raises."""
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "INSERT INTO themes (id, brightness) VALUES (?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET brightness=excluded.brightness",
+            (tid, int(pct)),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
 
 
 def bump_queue(tid: str, front: bool = True) -> None:

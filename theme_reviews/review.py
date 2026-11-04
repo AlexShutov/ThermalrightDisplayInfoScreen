@@ -24,6 +24,7 @@ This is a dev/review tool -- not part of the shipped MIT package.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -38,6 +39,7 @@ FAVORITES = os.path.join(HERE, "favorites.json")
 
 _VENV_TRCC = os.path.join(HERE, "..", ".venv-trcc", "bin", "trcc")
 TRCC = os.environ.get("TRCC", _VENV_TRCC if os.path.exists(_VENV_TRCC) else "trcc")
+FFMPEG = os.environ.get("FFMPEG", "/opt/homebrew/bin/ffmpeg")
 
 _ID_RE = re.compile(r"^\s*([a-zA-Z]\d{3,4})\s+(.+?)\s*$")
 
@@ -111,6 +113,56 @@ def save_favorites(path: str, favorites: list[str], themes: dict[str, str]) -> N
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def set_dev_brightness(device: str, pct: int) -> None:
+    """Set native panel brightness to clamp(*pct*, 0..100).  Never raises."""
+    try:
+        pct = max(0, min(100, int(pct)))
+    except (TypeError, ValueError):
+        pct = 100
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            [TRCC, "display", "set-brightness", device, str(pct)],
+            capture_output=True, text=True, check=False,
+        )
+
+
+def encode_brightness_video(src: str, dst: str, pct: int) -> bool:
+    """Encode *src* with ffmpeg ``eq=brightness`` so *pct* dims/brightens it.
+
+    Returns True on success; never touches *src* and never raises.  A partial
+    *dst* is removed on failure.
+    """
+    v = (int(pct) - 100) / 100.0
+    for codec in ("h264_videotoolbox", "libx264"):
+        args = [
+            FFMPEG, "-y", "-i", src,
+            "-vf", f"eq=brightness={v:.6f}",
+            "-c:v", codec, "-b:v", "1000k",
+            "-loglevel", "error", dst,
+        ]
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, check=False)
+        except Exception:
+            r = None
+        if r is not None and r.returncode == 0 and os.path.exists(dst):
+            return True
+        with contextlib.suppress(OSError):
+            os.remove(dst)
+    return False
+
+
+def load_local_video(device: str, path: str) -> bool:
+    """Play ``trcc display load-video`` and report success.  Never raises."""
+    try:
+        r = subprocess.run(
+            [TRCC, "display", "load-video", device, path],
+            capture_output=True, text=True, check=False,
+        )
+        return bool(r and r.returncode == 0)
+    except Exception:
+        return False
 
 
 def load_theme(device: str, theme_id: str) -> bool:
