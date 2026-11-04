@@ -647,6 +647,7 @@ class PreviewApp(QWidget):
     def _build_dock_panel(self) -> None:
         self._dock_open = False
         self._dock_anim: QPropertyAnimation | None = None
+        self._base_w: int | None = None
         self._dock_tiles: dict[str, FavoriteTile] = {}
         self._dock_panel = QWidget(self)
         self._dock_panel.setObjectName("dock")
@@ -689,10 +690,16 @@ class PreviewApp(QWidget):
             self._dock_anim = QPropertyAnimation(self._dock_panel, b"maximumWidth", self)
             self._dock_anim.setDuration(180)
             self._dock_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            self._dock_anim.valueChanged.connect(self._on_dock_anim)
         self._dock_anim.stop()
+        self._base_w = self.width() - self._dock_panel.maximumWidth()
         self._dock_anim.setStartValue(self._dock_panel.maximumWidth())
         self._dock_anim.setEndValue(target)
         self._dock_anim.start()
+
+    def _on_dock_anim(self, value: float) -> None:
+        if self._base_w is not None:
+            self.resize(int(self._base_w + value), self.height())
 
     def _refresh_dock(self) -> None:
         current = self.themes[self.index][0] if self.themes else None
