@@ -25,6 +25,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
     QRectF,
+    QSize,
     Qt,
     QThread,
     QTimer,
@@ -97,6 +98,31 @@ QRadioButton { color: white; }
 """
 
 DOCK_WIDTH = 232
+DOCK_COLS = 2
+TILE_W = 104
+TILE_H = 92
+
+
+def _row_matches(key: str, row: dict | None) -> bool:
+    """Whether a metadata *row* belongs to the given filter group.
+
+    Shared by :meth:`PreviewApp._apply_filter` and the favorites dock so the
+    group predicates cannot drift apart.  Unknown rows (not in the DB) belong
+    only to the ``"all"`` group.
+    """
+    if key == "all":
+        return True
+    if row is None:
+        return False
+    dark = row["is_dark"] == 1
+    flash = row["has_flash"] == 1
+    if key == "dark":
+        return dark and not flash
+    if key == "light":
+        return not dark
+    if key == "flash":
+        return dark and flash
+    return True
 
 
 class KeyCap(QPushButton):
@@ -200,6 +226,78 @@ class DockToggle(QPushButton):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
+        painter.end()
+
+
+class FavoriteTile(QWidget):
+    """One liked-theme tile: rounded preview + id, green border when selected."""
+
+    clicked = Signal(str)
+
+    def __init__(self, tid: str, thumb_dir: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.tid = tid
+        self._selected = False
+        path = os.path.join(thumb_dir, f"{tid}.png")
+        self._pix = QPixmap(path) if os.path.exists(path) else QPixmap()
+        self.setFixedSize(TILE_W, TILE_H)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set_selected(self, selected: bool) -> None:
+        if selected != self._selected:
+            self._selected = selected
+            self.update()
+
+    def is_selected(self) -> bool:
+        return self._selected
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if (
+            event.button() == Qt.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self.clicked.emit(self.tid)
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+        pad = 3.0
+        rect = QRectF(0, 0, w, h).adjusted(pad, pad, -pad, -pad)
+        radius = 10.0
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#232830"))
+        painter.drawPath(path)
+        if not self._pix.isNull():
+            target = rect.adjusted(0, 0, 0, -18)
+            scaled = self._pix.scaled(
+                QSize(int(target.width()), int(target.height())),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            x = int(target.x() + (target.width() - scaled.width()) / 2)
+            y = int(target.y() + (target.height() - scaled.height()) / 2)
+            painter.save()
+            painter.setClipPath(path)
+            painter.drawPixmap(x, y, scaled)
+            painter.restore()
+        bar = QRectF(rect.x(), rect.bottom() - 18, rect.width(), 18)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(11, 15, 20, 200))
+        painter.drawRoundedRect(bar, 4, 4)
+        painter.setPen(QColor("#c3cbdb"))
+        f = painter.font()
+        f.setPixelSize(11)
+        f.setBold(True)
+        painter.setFont(f)
+        painter.drawText(bar, Qt.AlignCenter, self.tid)
+        if self._selected:
+            painter.setPen(QPen(QColor("#35d08a")))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1.0, 1.0, -1.0, -1.0), radius, radius)
         painter.end()
 
 
@@ -544,6 +642,7 @@ class PreviewApp(QWidget):
         root.addWidget(self._dock_panel)
         root.addWidget(self._dock_toggle)
         self.setMinimumSize(560, 480)
+        self._refresh_dock()
 
     def _build_dock_panel(self) -> None:
         self._dock_open = False
@@ -595,6 +694,22 @@ class PreviewApp(QWidget):
         self._dock_anim.setEndValue(target)
         self._dock_anim.start()
 
+    def _refresh_dock(self) -> None:
+        show = [tid for tid in self._fav if _row_matches(self._filter, self._meta.get(tid))]
+        for tid in show:
+            if tid not in self._dock_tiles:
+                self._dock_tiles[tid] = FavoriteTile(tid, self.thumb_dir)
+        while self._favs_grid.count():
+            item = self._favs_grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().hide()
+        for i, tid in enumerate(show):
+            self._favs_grid.addWidget(self._dock_tiles[tid], i // DOCK_COLS, i % DOCK_COLS)
+            self._dock_tiles[tid].show()
+        for tid, tile in self._dock_tiles.items():
+            if tid not in show:
+                tile.hide()
+
     def _refresh(self, load_panel: bool = True) -> None:
         tid, cat = self.themes[self.index]
         self._preview_index(self.index)
@@ -606,27 +721,12 @@ class PreviewApp(QWidget):
     def _apply_filter(self) -> None:
         key = self._filter
         meta = self._meta
-
-        def keep(row: dict | None) -> bool:
-            if key == "all":
-                return True
-            if row is None:
-                return False
-            dark = row["is_dark"] == 1
-            flash = row["has_flash"] == 1
-            if key == "dark":
-                return dark and not flash
-            if key == "light":
-                return not dark
-            if key == "flash":
-                return dark and flash
-            return True
-
-        self.themes = [t for t in self._all_themes if keep(meta.get(t[0]))]
+        self.themes = [t for t in self._all_themes if _row_matches(key, meta.get(t[0]))]
         if not self.themes:
             self.index = 0
             self._slider.setRange(1, 1)
             self._slider.setValue(1)
+            self._refresh_dock()
             return
         if self.index >= len(self.themes):
             self.index = len(self.themes) - 1
