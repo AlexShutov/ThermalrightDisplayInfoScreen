@@ -214,6 +214,7 @@ class PreviewPane(QWidget):
             self._media = QMediaPlayer(self)
             self._audio = QAudioOutput(self)
             self._media.setAudioOutput(self._audio)
+            self._media.setVideoOutput(self._video_widget)
             self._media.errorOccurred.connect(self._on_media_error)
             lay.addWidget(self._video_widget, stretch=1)
             self._video_widget.hide()
@@ -283,7 +284,7 @@ class PreviewPane(QWidget):
             pass
         for c in candidates:
             if c and os.path.exists(c):
-                return c
+                return os.path.normpath(c)
         return None
 
 
