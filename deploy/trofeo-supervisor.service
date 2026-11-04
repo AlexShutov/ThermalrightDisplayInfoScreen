@@ -1,0 +1,14 @@
+[Unit]
+Description=Trofeo Vision 11.3 LCD dashboard (reactive renderer + USB reconnect)
+After=multi-user.target
+
+[Service]
+Type=simple
+# Adjust the venv/project paths to your install. `trofeo run` handles USB
+# reconnect itself; Restart only kicks in if the process crashes.
+ExecStart=%h/.venv-trcc/bin/trofeo run --config %h/ThermaltakeDisplay/config.yaml
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
