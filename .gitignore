@@ -19,3 +19,9 @@ venv/
 
 # Local test artifacts
 test-frame.png
+
+# theme_reviews runtime data (downloaded media, generated DB, personal state)
+theme_reviews/themes/
+theme_reviews/themes.db*
+theme_reviews/favorites.json
+theme_reviews/review_state.json
