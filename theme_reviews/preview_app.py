@@ -457,7 +457,9 @@ class PreviewPane(QWidget):
         candidates: list[str] = []
         if brightness != 100:
             baked = os.path.join(
-                theme_db.THEMES_ROOT, tid, f"{tid}_brightness_adjusted.mp4"
+                theme_db.THEMES_ROOT,
+                tid,
+                f"{tid}_brightness_adjusted_{brightness}.mp4",
             )
             if os.path.exists(baked):
                 candidates.append(os.path.normpath(baked))
@@ -868,7 +870,7 @@ class PreviewApp(QWidget):
 
     def _update_classification(self, tid: str) -> None:
         row = self._meta.get(tid)
-        if row:
+        if row and row.get("is_dark") is not None:
             dark = "dark" if row["is_dark"] else "light"
             flash = "flash" if row["has_flash"] else "no-flash"
             ready = "ready" if theme_db.is_ready(row) else "fetching"
@@ -937,8 +939,28 @@ class PreviewApp(QWidget):
     def _src_video(self, tid: str) -> str | None:
         if not tid:
             return None
-        cand = os.path.join(theme_db.THEMES_ROOT, tid, f"{tid}.mp4")
-        return os.path.normpath(cand) if os.path.exists(cand) else None
+        cands = [
+            os.path.join(theme_db.THEMES_ROOT, tid, f"{tid}.mp4"),
+            os.path.join(
+                os.path.dirname(self.thumb_dir),
+                "..",
+                "web",
+                "1920440",
+                f"{tid}.mp4",
+            ),
+        ]
+        try:
+            import trcc as _trcc  # noqa: F401
+
+            data_dir = getattr(_trcc, "DATA_DIR", None)
+            if data_dir:
+                cands.append(os.path.join(data_dir, "web", "1920440", f"{tid}.mp4"))
+        except Exception:
+            pass
+        for c in cands:
+            if c and os.path.exists(c):
+                return os.path.normpath(c)
+        return None
 
     def _schedule_bake(self, tid: str, pct: int) -> None:
         self._bake_timer.stop()
@@ -946,8 +968,6 @@ class PreviewApp(QWidget):
             return
         if pct == 100:
             self._restore_normal(tid)
-            return
-        if self._bake_thread is not None and self._bake_thread.isRunning():
             return
         cached = self._brightness_cache.get((tid, pct))
         if cached and os.path.exists(cached):
@@ -970,11 +990,14 @@ class PreviewApp(QWidget):
     def _on_bake_debounce(self) -> None:
         if self._bake_target is None:
             return
+        if self._bake_thread is not None and self._bake_thread.isRunning():
+            # A bake is in flight; _on_bake_done will re-schedule this target.
+            return
         tid, pct, src = self._bake_target
         self._bake_seq += 1
         seq = self._bake_seq
         dst = os.path.join(
-            theme_db.THEMES_ROOT, tid, f"{tid}_brightness_adjusted.mp4"
+            theme_db.THEMES_ROOT, tid, f"{tid}_brightness_adjusted_{pct}.mp4"
         )
         worker = _BakeWorker(tid, pct, seq, src, dst)
         worker.done.connect(self._on_bake_done)
@@ -985,10 +1008,25 @@ class PreviewApp(QWidget):
         if ok:
             self._brightness_cache[(tid, pct)] = path
         if seq != self._bake_seq:
+            self._maybe_retry_bake()
             return
         current = self._brightness_slider.value()
         if ok and current == pct and self.themes and self.themes[self.index][0] == tid:
             self._apply_baked(tid, pct, path)
+        else:
+            self._maybe_retry_bake()
+
+    def _maybe_retry_bake(self) -> None:
+        """Re-arm the debounce for a target that was deferred by a busy worker."""
+        if not self.themes:
+            return
+        tid = self.themes[self.index][0]
+        pct = self._brightness_slider.value()
+        if pct == 100:
+            return
+        target = self._bake_target
+        if target and target[0] == tid and target[1] == pct:
+            self._bake_timer.start(350)
 
     def _apply_baked(self, tid: str, pct: int, path: str) -> None:
         try:
