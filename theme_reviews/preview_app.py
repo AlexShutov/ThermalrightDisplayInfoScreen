@@ -20,11 +20,12 @@ import os
 import sys
 import threading
 
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -33,6 +34,15 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+
+    _HAS_VIDEO = True
+except Exception:
+    QAudioOutput = QMediaPlayer = QVideoWidget = None
+    _HAS_VIDEO = False
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -57,6 +67,20 @@ APP_SS = """
 QLabel#title { color: #e8ecf4; font-size: 20px; font-weight: 700; }
 QLabel#number { color: #97a0b2; font-size: 14px; }
 QLabel#status { color: #8a93a6; font-size: 12px; }
+QGroupBox {
+    border: 1px solid white;
+    border-radius: 8px;
+    margin-top: 8px;
+    color: white;
+}
+QGroupBox::title {
+    color: white;
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 4px;
+}
+QRadioButton { color: white; }
 """
 
 
@@ -159,6 +183,110 @@ class ThumbnailView(QLabel):
         self._rerender()
 
 
+class PreviewPane(QWidget):
+    """Static thumbnail with an optional looping video overlay for one theme."""
+
+    def __init__(self, thumb_dir: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._thumb_dir = thumb_dir
+        self._tid: str | None = None
+        self.thumb = ThumbnailView(thumb_dir)
+        self._media: QMediaPlayer | None = None
+        self._audio: QAudioOutput | None = None
+        self._video_widget: QVideoWidget | None = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self.thumb, stretch=1)
+        self._init_video(lay)
+        self.setMinimumSize(240, 240)
+
+    def _init_video(self, lay: QVBoxLayout) -> None:
+        if not _HAS_VIDEO:
+            return
+        try:
+            self._video_widget = QVideoWidget()
+            self._video_widget.setMinimumSize(240, 240)
+            with contextlib.suppress(Exception):
+                self._video_widget.setAspectRatioMode(
+                    Qt.AspectRatioMode.KeepAspectRatio
+                )
+            self._media = QMediaPlayer(self)
+            self._audio = QAudioOutput(self)
+            self._media.setAudioOutput(self._audio)
+            self._media.errorOccurred.connect(self._on_media_error)
+            lay.addWidget(self._video_widget, stretch=1)
+            self._video_widget.hide()
+        except Exception:
+            self._video_widget = None
+            self._media = None
+            self._audio = None
+
+    def set_theme(self, tid: str) -> None:
+        self._tid = tid
+        path = self._resolve_video(tid)
+        if path is not None and self._media is not None:
+            self._play_video(path)
+        else:
+            self._stop_video()
+            self.thumb.set_theme(tid)
+
+    def _play_video(self, path: str) -> None:
+        try:
+            self._media.stop()
+            self._media.setSource(QUrl.fromLocalFile(path))
+            with contextlib.suppress(Exception):
+                self._media.setLoops(-1)
+            self.thumb.hide()
+            if self._video_widget is not None:
+                self._video_widget.show()
+            self._media.play()
+        except Exception:
+            self._stop_video()
+
+    def _stop_video(self) -> None:
+        if self._media is not None:
+            with contextlib.suppress(Exception):
+                self._media.stop()
+                self._media.setSource(QUrl())
+        if self._video_widget is not None:
+            self._video_widget.hide()
+        self.thumb.show()
+
+    def _on_media_error(self, *_args) -> None:
+        self._stop_video()
+        if self._tid:
+            self.thumb.set_theme(self._tid)
+
+    def _resolve_video(self, tid: str) -> str | None:
+        if not tid:
+            return None
+        candidates = [
+            os.path.join(theme_db.THEMES_ROOT, tid, f"{tid}.mp4"),
+            os.path.join(
+                os.path.dirname(self._thumb_dir),
+                "..",
+                "web",
+                "1920440",
+                f"{tid}.mp4",
+            ),
+        ]
+        try:
+            import trcc as _trcc  # noqa: F401
+
+            data_dir = getattr(_trcc, "DATA_DIR", None)
+            if data_dir:
+                candidates.append(
+                    os.path.join(data_dir, "web", "1920440", f"{tid}.mp4")
+                )
+        except Exception:
+            pass
+        for c in candidates:
+            if c and os.path.exists(c):
+                return c
+        return None
+
+
 class _PanelLoader(QThread):
     """Serial, latest-wins loader that keeps blocking subprocess work off the GUI.
 
@@ -224,9 +352,11 @@ class PreviewApp(QWidget):
         super().__init__()
         self.device = device
         self.thumb_dir = thumb_dir
-        self.themes = load_themes(RAW_LIST)
+        self._all_themes = load_themes(RAW_LIST)
         if panel_only:
-            self.themes = filter_panel_themes(self.themes, thumb_dir)
+            self._all_themes = filter_panel_themes(self._all_themes, thumb_dir)
+        self.themes = list(self._all_themes)
+        self._filter = "all"
         self.fav = set(load_favorites(FAVORITES))
         self._fav = list(self.fav)
         self.index = index_of(self.themes, load_state(), -1)
@@ -253,10 +383,10 @@ class PreviewApp(QWidget):
         self.setStyleSheet(APP_SS)
         self.setFocusPolicy(Qt.StrongFocus)
         v = QVBoxLayout(self)
-        v.setContentsMargins(18, 18, 18, 18)
-        v.setSpacing(12)
-        self.thumb = ThumbnailView(self.thumb_dir)
-        v.addWidget(self.thumb, stretch=1)
+        v.setContentsMargins(18, 18, 18, 12)
+        v.setSpacing(8)
+        self.preview = PreviewPane(self.thumb_dir)
+        v.addWidget(self.preview, stretch=1)
         row = QHBoxLayout()
         self.title = QLabel()
         self.title.setObjectName("title")
@@ -284,7 +414,8 @@ class PreviewApp(QWidget):
         self.classif = QLabel()
         self.classif.setObjectName("status")
         v.addWidget(self.classif)
-        mode = QHBoxLayout()
+        mode_group = QGroupBox("Листание")
+        mode = QHBoxLayout(mode_group)
         self.manual_radio = QRadioButton("Ручное листание")
         self.auto_radio = QRadioButton("Авто")
         self.manual_radio.setChecked(True)
@@ -295,7 +426,28 @@ class PreviewApp(QWidget):
         mode.addWidget(self.manual_radio)
         mode.addWidget(self.auto_radio)
         mode.addStretch(1)
-        v.addLayout(mode)
+        v.addWidget(mode_group)
+        filter_group = QGroupBox("Фильтр")
+        flt = QVBoxLayout(filter_group)
+        self.filter_all = QRadioButton("Все")
+        self.filter_dark = QRadioButton("Тёмная")
+        self.filter_light = QRadioButton("Светлая")
+        self.filter_flash = QRadioButton("Тёмная со вспышками")
+        self.filter_all.setChecked(True)
+        self._filter_group = QButtonGroup(self)
+        for rb, key in (
+            (self.filter_all, "all"),
+            (self.filter_dark, "dark"),
+            (self.filter_light, "light"),
+            (self.filter_flash, "flash"),
+        ):
+            self._filter_group.addButton(rb)
+            rb.toggled.connect(
+                lambda checked, k=key: self._on_filter_toggled(k, checked)
+            )
+        for rb in (self.filter_all, self.filter_dark, self.filter_light, self.filter_flash):
+            flt.addWidget(rb)
+        v.addWidget(filter_group)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.prev_key = KeyCap("◀")
@@ -321,6 +473,42 @@ class PreviewApp(QWidget):
         if load_panel:
             self._load_panel(tid)
 
+    def _apply_filter(self) -> None:
+        key = self._filter
+        meta = self._meta
+
+        def keep(row: dict | None) -> bool:
+            if key == "all":
+                return True
+            if row is None:
+                return False
+            dark = row["is_dark"] == 1
+            flash = row["has_flash"] == 1
+            if key == "dark":
+                return dark and not flash
+            if key == "light":
+                return not dark
+            if key == "flash":
+                return dark and flash
+            return True
+
+        self.themes = [t for t in self._all_themes if keep(meta.get(t[0]))]
+        if not self.themes:
+            self.index = 0
+            self._slider.setRange(1, 1)
+            self._slider.setValue(1)
+            return
+        if self.index >= len(self.themes):
+            self.index = len(self.themes) - 1
+        self._slider.setRange(1, len(self.themes))
+        self._slider.setValue(self.index + 1)
+        self._refresh(load_panel=True)
+
+    def _on_filter_toggled(self, key: str, checked: bool) -> None:
+        if checked:
+            self._filter = key
+            self._apply_filter()
+
     def _load_panel(self, tid: str) -> None:
         self._auto_timer.stop()
         self._set_status("loading…")
@@ -344,7 +532,7 @@ class PreviewApp(QWidget):
 
     def _preview_index(self, i: int) -> None:
         tid, cat = self.themes[i]
-        self.thumb.set_theme(tid)
+        self.preview.set_theme(tid)
         self.title.setText(f"{cat} · {tid}")
         self.number.setText(f"[{i + 1}/{len(self.themes)}]")
         self._update_mark(tid)
