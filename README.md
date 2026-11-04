@@ -58,6 +58,10 @@ python tools/probe_fps.py      # measure FPS ceiling
 
 ## Licenses
 
-This package is **MIT**. `trcc-linux` is **GPL-3.0** — integrate it as an
-external engine (installed dependency / subprocess), do not copy its code into
-these sources.
+- **This package** is **MIT**.
+- **`trcc-linux`** is **GPL-3.0** and is used **only as an external engine** —
+  an installed dependency / subprocess launched by `trofeo supervise`. Its code
+  is never copied into these sources, so this package stays MIT.
+
+Optional trcc integration (external, GPL-3.0):
+[https://github.com/Lexonight1/thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)
