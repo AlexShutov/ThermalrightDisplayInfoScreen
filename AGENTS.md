@@ -54,6 +54,58 @@ A **portable, self-contained app** that drives the **Thermalright Trofeo Vision 
   auto-start the daemon when none is running, and are NOT standalone long-running engine processes.
   We still layer our own supervisor on top so USB reconnect is our responsibility.
 
+## Theme Manager (local HTTP service + Qt adapter)
+
+The active project work extends the app into a **theme manager / SDK** on top of `trcc daemon`:
+
+- **Architecture: two planes.**
+  - *Display plane* (the host that owns USB + the panel): `manager` (HTTP service) + `trcc daemon`
+    (plays the video theme) + a **Qt adapter module** that draws the dashboard *on top of* the theme.
+  - *Data plane* (any host on LAN): producer apps/daemons `POST` JSON to the manager. Merge stays
+    local on the display host; a remote producer crashing never kills the dashboard (last state holds).
+- **Manager stack: Python + FastAPI + uvicorn** (single worker, `loop="asyncio"`), **pydantic v2** for
+  request validation. Chosen for 24/7 robustness: request-scoped state (no global accumulation →
+  no leak), one async worker (no per-request thread → no race), bounded request-body size middlware
+  (→ 413 instead of OOM on small RAM), timeouts on every outbound call, `systemd Restart=on-failure`.
+- **Manager → module bridge: atomic state file with monotonic `seq`** (temp + `os.replace`, the module
+  polls and reacts to `seq` growth). No IPC library; avoids torn reads and backpressure; the module
+  sees stale data via a `seq`/`updated_at` guard.
+- **API contract (subject to change as we build):**
+  - `POST /dashboard/setup` — `{ "gauges":[{"id","label","unit","min","max"}] }`
+  - `POST /dashboard/update` — `{ "values":{...} }` (full or partial)
+  - `POST /settings` — `{ "themes":{"day":id,"night":id}, "adapter":{"day":{palette},"night":{palette}} }`;
+    the manager computes the **active palette from the current mode** and is the way theme colors reach
+    the adapter (color names: `background`, `panel`, `accent`, `text`, `muted`).
+  - `POST /theme` — `{ "mode":"day"|"night" }` (manual trigger), switches trcc theme + adapter style.
+  - `GET /health` — `{ "status","uptime_s","seq","mode" }`
+  - Bridge state object: `{ "seq", "mode", "active_theme", "palette", "setup", "values" }`
+- **Render/lifecycle rule:** *no data → `background.end(key)`* (clean theme); *data present →
+  `background.show(key, source, fps)`*. Render reactively (on change), keepalive for the panel.
+- **Composite choice: Qt adapter (variant A)** — theme video plays as the background, Qt draws an
+  overlay packed into the frame and handed to `background`. Static-JPEG fallback is not the target
+  (loses live cloud themes).
+- **Licensing:** the manager stays **MIT**; the **Qt adapter module is GPL-3.0** (imports trcc
+  internals) — a separate external integration, never copied into MIT sources (same rule as trcc).
+- **Hardware target:** dev + runtime is **macOS** today (Trofeo is USB here; trcc daemon runs headless).
+  **Pi 5 / Orange Pi 6 Plus are future** deployment targets. Keep platform specifics (ffmpeg hwaccel,
+  headless Qt `QT_QPA_PLATFORM=offscreen`, DPI/devicePixelRatio, `sensors` temperature branch, Python
+  version, udev/systemd) behind `config.py` so the port later is config-only. On Pi 5 verify `trcc`
+  runs on aarch64 (the one real porting risk); fallback is our own `ly.py` + `supervise.py`.
+
+## Memory System (read on session start, archive on wrap-up)
+
+We keep a trcc-style memory tree so a new session/LLM picks up full context without re-deriving it:
+
+- **Startup order:** read `memory/SESSION.md` first (live handoff: current state + next step), then
+  `memory/MEMORY.md` (index of durable topic files), then open the topic files relevant to the task
+  (`hardware_protocol`, `trcc_engine`, `trcc_module_api`, `architecture`, `conventions`).
+- **Live vs durable:** `memory/SESSION.md` holds only current-run state and is rewritten every session.
+  Durable facts go in a topic file + the index, never in `SESSION.md`.
+- **Wrap-up:** before overwriting `SESSION.md`, copy its outgoing content to
+  `memory/sessions/YYYY-MM-DD-<slug>.md` and add a line to that folder's `README.md`. Then rewrite it.
+- **Verify, don't trust prose:** memory is point-in-time. Re-measure `file:line` claims against the
+  current code before acting on them (anchors drift). Treat any written plan as a hypothesis, not a fact.
+
 ## Repository-Specific Conventions
 
 - **Runtime is pure Python.** Deps: `pyusb`, `pillow`, `psutil` (+ optional `trcc-linux`). No LLM, no
