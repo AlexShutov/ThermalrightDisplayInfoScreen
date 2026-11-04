@@ -1,0 +1,10 @@
+{
+  "key": "probe",
+  "title": "Probe",
+  "summary": "Phase 0 cycle probe: module FrameSource -> background.show",
+  "version": "0.1.0",
+  "min_trcc": "9.12.0",
+  "default_on": false,
+  "author": "dev",
+  "capabilities": ["panels", "background"]
+}

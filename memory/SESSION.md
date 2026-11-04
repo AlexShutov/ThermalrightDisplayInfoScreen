@@ -8,8 +8,13 @@ Current run state. Durable facts live in the `MEMORY.md` index + topic files; th
 Task: build a **theme manager / SDK** on top of `trcc daemon` (local HTTP service + Qt adapter module
 drawing the dashboard over the theme). Dev + runtime = **macOS** today; Pi 5 / Orange Pi 6 Plus future.
 
-Memory system just rebuilt to match trcc's structure (SESSION / MEMORY-index + topic files /
-sessions archive). This is the start of Phase 0.
+Phase 0 core CYCLE is validated on hardware: a trcc module (key `probe`, `dev/trcc-module-probe/`)
+-> `host.background.show(key, FrameSource, 15 fps)` -> SourceDriver drives `latest()` -> panel
+(1920x440), and `background.end(key)` restores the theme. Probe is installed but currently OFF.
+The user picked composite option 1 (theme video under Qt overlay): next is to add the theme-video base
+(ffmpeg) + Qt overlay to the FrameSource, and handle the panel-attach race (enable can precede attach).
+
+## Open questions (this run)
 
 ## Plan (phase list)
 - **Cross-cutting: Test foundation (trcc style).** Injectable ports (FrameSink/SensorSource/
