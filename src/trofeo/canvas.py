@@ -12,17 +12,27 @@ def compose(metrics: dict, cfg: Config) -> Image.Image:
     img = Image.new("RGB", (w, h), (12, 14, 26))
     d = ImageDraw.Draw(img)
 
-    _text(d, "TROFEO 11.3", 40, 30, fill=(90, 200, 255))
-    _bar(d, 40, 96, w - 80, 40, _pct(metrics, "cpu"), (0, 180, 255), "CPU")
-    _bar(d, 40, 170, w - 80, 40, _pct(metrics, "ram"), (60, 220, 120), "RAM")
-    _bar(d, 40, 244, w - 80, 40, _pct(metrics, "disk"), (255, 180, 60), "DISK")
+    _text(d, "TROFEO 11.3", 40, 24, size=36, fill=(90, 200, 255))
 
-    y = 330
-    _text(d, _fmt(metrics.get("temp"), "temp", "{:.0f}C "), 40, y, size=30, fill=(255, 255, 255))
-    _text(d, _fmt(metrics.get("net"), "net", "{:.0f}B/s"), w - 560, y, size=30, fill=(180, 180, 200))
+    top = 96
+    rows = [
+        ("cpu", "CPU"),
+        ("ram", "RAM"),
+        ("disk", "DISK"),
+    ]
+    gap = 20
+    bar_h = (h - top - gap * (len(rows) - 1) - 60) // len(rows)
+    colors = [(0, 180, 255), (60, 220, 120), (255, 180, 60)]
+    y = top
+    for (key, label), color in zip(rows, colors):
+        _bar(d, 40, y, w - 80, bar_h, _pct(metrics, key), color, label)
+        y += bar_h + gap
+
+    y = h - 44
+    _text(d, _fmt(metrics.get("temp"), "temp", "{:.0f}C "), 40, y, size=28, fill=(255, 255, 255))
+    _text(d, _fmt(metrics.get("net"), "net", "{:.0f}B/s"), w - 560, y, size=28, fill=(180, 180, 200))
 
     for i in range(len(cfg.sensors)):
-        name = cfg.sensors[i]
         color = ((i * 60) % 256, (i * 90) % 256, (i * 120) % 256)
         d.rectangle([w - 60 - i * 0, h - 40, w - 40 - i * 0, h - 20], fill=color)
     return img

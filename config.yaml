@@ -1,6 +1,6 @@
 # Default dashboard config (YAML-first). Override with `trofeo run --config`.
 width: 1920
-height: 400
+height: 440
 keepalive_s: 2.0
 max_frame_bytes: 450000
 idle_fps: 2.0

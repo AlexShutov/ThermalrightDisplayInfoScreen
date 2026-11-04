@@ -8,15 +8,15 @@ from dataclasses import dataclass, field
 import yaml
 
 try:  # defaults for panel size (11.3) — no hardcode in the renderer
-    DEFAULT_SIZE = (1920, 400)
+    DEFAULT_SIZE = (1920, 440)
 except Exception:  # pragma: no cover
-    DEFAULT_SIZE = (1920, 400)
+    DEFAULT_SIZE = (1920, 440)
 
 
 @dataclass
 class Config:
     width: int = 1920
-    height: int = 400
+    height: int = 440
     keepalive_s: float = 2.0
     max_frame_bytes: int = 450_000
     idle_fps: float = 2.0

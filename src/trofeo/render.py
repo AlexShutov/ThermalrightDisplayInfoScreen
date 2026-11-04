@@ -103,6 +103,8 @@ class Renderer:
                 info = self.ly.connect(retries=20, delay_s=self.cfg.sensor_poll_s)
                 LOG.info("connected: PM=%d SUB=%d size=%dx%d", info["pm"], info["sub"],
                          info["width"], info["height"])
+                self.cfg.width = info["width"]
+                self.cfg.height = info["height"]
                 return
             except Exception as e:
                 LOG.warning("reconnect failed: %s; retrying", e)
