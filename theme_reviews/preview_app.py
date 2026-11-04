@@ -65,8 +65,10 @@ from browse import index_of, load_state, save_state  # noqa: E402
 from review import (  # noqa: E402
     FAVORITES,
     RAW_LIST,
+    encode_brightness_video,
     filter_panel_themes,
     load_favorites,
+    load_local_video,
     load_theme,
     load_themes,
     save_favorites,
@@ -368,7 +370,17 @@ class PreviewPane(QWidget):
         lay.setSpacing(0)
         lay.addWidget(self.thumb, stretch=1)
         self._init_video(lay)
+        self._overlay = QLabel(self)
+        self._overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._overlay.setGeometry(self.rect())
+        self._overlay.setStyleSheet("background: transparent;")
+        self._overlay.raise_()
         self.setMinimumSize(240, 240)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
 
     def _init_video(self, lay: QVBoxLayout) -> None:
         if not _HAS_VIDEO:
@@ -392,14 +404,25 @@ class PreviewPane(QWidget):
             self._media = None
             self._audio = None
 
-    def set_theme(self, tid: str) -> None:
+    def set_theme(self, tid: str, brightness: int = 100) -> None:
         self._tid = tid
-        path = self._resolve_video(tid)
+        path = self._resolve_video(tid, brightness)
         if path is not None and self._media is not None:
             self._play_video(path)
         else:
             self._stop_video()
             self.thumb.set_theme(tid)
+
+    def set_brightness(self, pct: int) -> None:
+        pct = max(0, min(255, int(pct)))
+        if pct == 100:
+            self._overlay.setStyleSheet("background: transparent;")
+        elif pct < 100:
+            a = int(255 * (100 - pct) / 100)
+            self._overlay.setStyleSheet(f"background: rgba(0, 0, 0, {a});")
+        else:
+            a = min(255, int(255 * (pct - 100) / 100))
+            self._overlay.setStyleSheet(f"background: rgba(255, 255, 255, {a});")
 
     def _play_video(self, path: str) -> None:
         try:
@@ -428,19 +451,28 @@ class PreviewPane(QWidget):
         if self._tid:
             self.thumb.set_theme(self._tid)
 
-    def _resolve_video(self, tid: str) -> str | None:
+    def _resolve_video(self, tid: str, brightness: int = 100) -> str | None:
         if not tid:
             return None
-        candidates = [
-            os.path.join(theme_db.THEMES_ROOT, tid, f"{tid}.mp4"),
-            os.path.join(
-                os.path.dirname(self._thumb_dir),
-                "..",
-                "web",
-                "1920440",
-                f"{tid}.mp4",
-            ),
-        ]
+        candidates: list[str] = []
+        if brightness != 100:
+            baked = os.path.join(
+                theme_db.THEMES_ROOT, tid, f"{tid}_brightness_adjusted.mp4"
+            )
+            if os.path.exists(baked):
+                candidates.append(os.path.normpath(baked))
+        candidates.extend(
+            [
+                os.path.join(theme_db.THEMES_ROOT, tid, f"{tid}.mp4"),
+                os.path.join(
+                    os.path.dirname(self._thumb_dir),
+                    "..",
+                    "web",
+                    "1920440",
+                    f"{tid}.mp4",
+                ),
+            ]
+        )
         try:
             import trcc as _trcc  # noqa: F401
 
@@ -509,6 +541,24 @@ class _PanelLoader(QThread):
             self._cond.notify()
 
 
+class _BakeWorker(QThread):
+    """Off-thread ffmpeg brightness bake; emits ``done`` when finished."""
+
+    done = Signal(str, int, int, bool, str)  # tid, pct, seq, ok, path
+
+    def __init__(self, tid: str, pct: int, seq: int, src: str, dst: str) -> None:
+        super().__init__()
+        self._tid = tid
+        self._pct = pct
+        self._seq = seq
+        self._src = src
+        self._dst = dst
+
+    def run(self) -> None:
+        ok = encode_brightness_video(self._src, self._dst, self._pct)
+        self.done.emit(self._tid, self._pct, self._seq, ok, self._dst)
+
+
 class PreviewApp(QWidget):
     """Main window: thumbnail + name/number + keycap buttons, keyboard-aware."""
 
@@ -543,6 +593,13 @@ class PreviewApp(QWidget):
         self._loader = _PanelLoader(device)
         self._loader.loaded.connect(self._on_loaded)
         self._loader.start()
+        self._bake_timer = QTimer(self)
+        self._bake_timer.setSingleShot(True)
+        self._bake_timer.timeout.connect(self._on_bake_debounce)
+        self._bake_target: tuple[str, int, str] | None = None
+        self._bake_seq = 0
+        self._bake_thread: _BakeWorker | None = None
+        self._brightness_cache: dict[tuple[str, int], str] = {}
         self._build_ui()
         self._refresh(load_panel=False)
 
@@ -744,6 +801,7 @@ class PreviewApp(QWidget):
                 return
 
     def _refresh(self, load_panel: bool = True) -> None:
+        self._teardown_brightness()
         tid, cat = self.themes[self.index]
         self._preview_index(self.index)
         self._sync_slider()
@@ -797,7 +855,11 @@ class PreviewApp(QWidget):
     def _preview_index(self, i: int) -> None:
         tid, cat = self.themes[i]
         self.preview.set_theme(tid)
-        self._brightness_slider.setValue(theme_db.get_brightness(tid))
+        b = theme_db.get_brightness(tid)
+        prev = self._brightness_slider.value()
+        self._brightness_slider.setValue(b)
+        if prev == b and b != 100:
+            self._on_brightness_changed(b)
         self.title.setText(f"{cat} · {tid}")
         self.number.setText(f"[{i + 1}/{len(self.themes)}]")
         self._update_mark(tid)
@@ -869,6 +931,83 @@ class PreviewApp(QWidget):
         theme_db.set_brightness(tid, pct)
         with contextlib.suppress(Exception):
             set_dev_brightness(self.device, pct)
+        self.preview.set_brightness(pct)
+        self._schedule_bake(tid, pct)
+
+    def _src_video(self, tid: str) -> str | None:
+        if not tid:
+            return None
+        cand = os.path.join(theme_db.THEMES_ROOT, tid, f"{tid}.mp4")
+        return os.path.normpath(cand) if os.path.exists(cand) else None
+
+    def _schedule_bake(self, tid: str, pct: int) -> None:
+        self._bake_timer.stop()
+        if tid is None:
+            return
+        if pct == 100:
+            self._restore_normal(tid)
+            return
+        if self._bake_thread is not None and self._bake_thread.isRunning():
+            return
+        cached = self._brightness_cache.get((tid, pct))
+        if cached and os.path.exists(cached):
+            self._apply_baked(tid, pct, cached)
+            return
+        src = self._src_video(tid)
+        if src is None:
+            return
+        self._bake_target = (tid, pct, src)
+        self._bake_timer.start(350)
+
+    def _restore_normal(self, tid: str) -> None:
+        try:
+            set_dev_brightness(self.device, 100)
+            self.preview.set_brightness(100)
+            self._load_panel(tid)
+        except Exception:
+            pass
+
+    def _on_bake_debounce(self) -> None:
+        if self._bake_target is None:
+            return
+        tid, pct, src = self._bake_target
+        self._bake_seq += 1
+        seq = self._bake_seq
+        dst = os.path.join(
+            theme_db.THEMES_ROOT, tid, f"{tid}_brightness_adjusted.mp4"
+        )
+        worker = _BakeWorker(tid, pct, seq, src, dst)
+        worker.done.connect(self._on_bake_done)
+        self._bake_thread = worker
+        worker.start()
+
+    def _on_bake_done(self, tid: str, pct: int, seq: int, ok: bool, path: str) -> None:
+        if ok:
+            self._brightness_cache[(tid, pct)] = path
+        if seq != self._bake_seq:
+            return
+        current = self._brightness_slider.value()
+        if ok and current == pct and self.themes and self.themes[self.index][0] == tid:
+            self._apply_baked(tid, pct, path)
+
+    def _apply_baked(self, tid: str, pct: int, path: str) -> None:
+        try:
+            load_local_video(self.device, path)
+            self.preview.set_theme(tid, brightness=pct)
+            set_dev_brightness(self.device, 100)
+            self.preview.set_brightness(100)
+        except Exception:
+            pass
+
+    def _teardown_brightness(self) -> None:
+        try:
+            self._bake_timer.stop()
+            self._bake_target = None
+            self._bake_seq += 1
+            set_dev_brightness(self.device, 100)
+            self.preview.set_brightness(100)
+        except Exception:
+            pass
 
     def prev(self) -> None:
         self.prev_key.flash()
