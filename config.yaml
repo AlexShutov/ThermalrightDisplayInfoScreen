@@ -1,0 +1,12 @@
+# Default dashboard config (YAML-first). Override with `trofeo run --config`.
+width: 1920
+height: 400
+keepalive_s: 2.0
+max_frame_bytes: 450000
+idle_fps: 2.0
+active_fps: 15.0
+sensor_poll_s: 1.0
+jpeg_quality: 80
+theme: dark
+sensors: [cpu, ram, temp, disk, net]
+background: null

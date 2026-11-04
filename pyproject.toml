@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trofeo"
+version = "0.1.0"
+description = "Reactive, reconnect-aware dashboard app for the Thermalright Trofeo Vision 11.3 LCD (USB 0416:5408, LY)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pyusb>=1.2",
+    "pillow>=10",
+    "psutil>=5.9",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+# Ready-made Control Center (GPL-3.0) for advanced themes/video, integrated as an
+# external engine. Not required for the portable core path (our own LY transport).
+trcc = ["trcc-linux>=9.12"]
+
+[project.scripts]
+trofeo = "trofeo.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
