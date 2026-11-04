@@ -97,7 +97,7 @@ QGroupBox::title {
 QRadioButton { color: white; }
 """
 
-DOCK_WIDTH = 232
+DOCK_WIDTH = 240
 DOCK_COLS = 2
 TILE_W = 104
 TILE_H = 92
@@ -674,7 +674,7 @@ class PreviewApp(QWidget):
         self._favs_container.setObjectName("favs_container")
         self._favs_container.setStyleSheet("background: transparent;")
         self._favs_grid = QGridLayout(self._favs_container)
-        self._favs_grid.setContentsMargins(0, 0, 0, 0)
+        self._favs_grid.setContentsMargins(6, 0, 0, 0)
         self._favs_grid.setSpacing(8)
         self._favs_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._favs_scroll.setWidget(self._favs_container)
