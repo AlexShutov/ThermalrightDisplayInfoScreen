@@ -20,16 +20,29 @@ import os
 import sys
 import threading
 
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -83,6 +96,8 @@ QGroupBox::title {
 QRadioButton { color: white; }
 """
 
+DOCK_WIDTH = 232
+
 
 class KeyCap(QPushButton):
     """A keyboard-keycap-styled button with a pressed/flash animation."""
@@ -130,6 +145,61 @@ class KeyCap(QPushButton):
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(QRectF(x, y, rw, rh), Qt.AlignCenter, self._glyph)
+        painter.end()
+
+
+class DockToggle(QPushButton):
+    """Narrow right-edge button whose chevron flips (animated) with the panel."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._arrow = 0.0  # 0.0 -> chevron points right; 1.0 -> points left
+        self.setFixedWidth(28)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip("Show/hide favorites")
+        self._anim = QPropertyAnimation(self, b"arrow", self)
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+    def _get_arrow(self) -> float:
+        return self._arrow
+
+    def _set_arrow(self, value: float) -> None:
+        self._arrow = value
+        self.update()
+
+    arrow = Property(float, _get_arrow, _set_arrow)
+
+    def animate_to(self, target: float) -> None:
+        self._anim.stop()
+        self._anim.setStartValue(self._arrow)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+        rect = QRectF(1, 6, w - 2, h - 12)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#2a3040"))
+        painter.drawRoundedRect(rect, 6, 6)
+        direction = 1.0 - 2.0 * self._arrow
+        cx, cy = w / 2.0, h / 2.0
+        arm_x = min(6.0, w / 3.0)
+        arm_y = 8.0
+        path = QPainterPath()
+        path.moveTo(cx - direction * arm_x, cy - arm_y)
+        path.lineTo(cx + direction * arm_x, cy)
+        path.lineTo(cx - direction * arm_x, cy + arm_y)
+        pen = QPen(QColor("#dfe4ef"))
+        pen.setWidthF(2.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
         painter.end()
 
 
@@ -383,8 +453,11 @@ class PreviewApp(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(APP_SS)
         self.setFocusPolicy(Qt.StrongFocus)
-        v = QVBoxLayout(self)
-        v.setContentsMargins(18, 18, 18, 12)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(18, 18, 6, 12)
+        root.setSpacing(6)
+        v = QVBoxLayout()
+        v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
         self.preview = PreviewPane(self.thumb_dir)
         v.addWidget(self.preview, stretch=1)
@@ -464,7 +537,63 @@ class PreviewApp(QWidget):
         buttons.addWidget(self.next_key)
         buttons.addStretch(1)
         v.addLayout(buttons)
-        self.setMinimumSize(360, 480)
+        root.addLayout(v, stretch=1)
+        self._build_dock_panel()
+        self._dock_toggle = DockToggle(self)
+        self._dock_toggle.clicked.connect(self._toggle_dock)
+        root.addWidget(self._dock_panel)
+        root.addWidget(self._dock_toggle)
+        self.setMinimumSize(560, 480)
+
+    def _build_dock_panel(self) -> None:
+        self._dock_open = False
+        self._dock_anim = None
+        self._dock_tiles = {}
+        self._dock_panel = QWidget(self)
+        self._dock_panel.setObjectName("dock")
+        self._dock_panel.setStyleSheet(
+            "QWidget#dock { background: #20242c; border: 1px solid #2a3040; "
+            "border-radius: 8px; }"
+            "QLabel#dock_header { color: #e8ecf4; font-weight: 700; font-size: 13px; "
+            "padding-left: 2px; }"
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+        pl = QVBoxLayout(self._dock_panel)
+        pl.setContentsMargins(8, 8, 8, 8)
+        pl.setSpacing(6)
+        self._dock_header = QLabel("Favorites")
+        self._dock_header.setObjectName("dock_header")
+        pl.addWidget(self._dock_header)
+        self._favs_scroll = QScrollArea(self._dock_panel)
+        self._favs_scroll.setObjectName("favs_scroll")
+        self._favs_scroll.setWidgetResizable(True)
+        self._favs_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._favs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._favs_container = QWidget()
+        self._favs_container.setObjectName("favs_container")
+        self._favs_container.setStyleSheet("background: transparent;")
+        self._favs_grid = QGridLayout(self._favs_container)
+        self._favs_grid.setContentsMargins(0, 0, 0, 0)
+        self._favs_grid.setSpacing(8)
+        self._favs_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._favs_scroll.setWidget(self._favs_container)
+        pl.addWidget(self._favs_scroll, 1)
+        self._dock_panel.setMinimumWidth(0)
+        self._dock_panel.setMaximumWidth(0)
+
+    def _toggle_dock(self) -> None:
+        self._dock_open = not self._dock_open
+        self._dock_toggle.animate_to(1.0 if self._dock_open else 0.0)
+        target = DOCK_WIDTH if self._dock_open else 0
+        if self._dock_anim is None:
+            self._dock_anim = QPropertyAnimation(self._dock_panel, b"maximumWidth", self)
+            self._dock_anim.setDuration(180)
+            self._dock_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._dock_anim.stop()
+        self._dock_anim.setStartValue(self._dock_panel.maximumWidth())
+        self._dock_anim.setEndValue(target)
+        self._dock_anim.start()
 
     def _refresh(self, load_panel: bool = True) -> None:
         tid, cat = self.themes[self.index]
