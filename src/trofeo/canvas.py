@@ -24,13 +24,14 @@ def compose(metrics: dict, cfg: Config) -> Image.Image:
     bar_h = (h - top - gap * (len(rows) - 1) - 60) // len(rows)
     colors = [(0, 180, 255), (60, 220, 120), (255, 180, 60)]
     y = top
-    for (key, label), color in zip(rows, colors):
+    for (key, label), color in zip(rows, colors, strict=False):
         _bar(d, 40, y, w - 80, bar_h, _pct(metrics, key), color, label)
         y += bar_h + gap
 
     y = h - 44
     _text(d, _fmt(metrics.get("temp"), "temp", "{:.0f}C "), 40, y, size=28, fill=(255, 255, 255))
-    _text(d, _fmt(metrics.get("net"), "net", "{:.0f}B/s"), w - 560, y, size=28, fill=(180, 180, 200))
+    _text(d, _fmt(metrics.get("net"), "net", "{:.0f}B/s"), w - 560, y, size=28,
+      fill=(180, 180, 200))
 
     for i in range(len(cfg.sensors)):
         color = ((i * 60) % 256, (i * 90) % 256, (i * 120) % 256)

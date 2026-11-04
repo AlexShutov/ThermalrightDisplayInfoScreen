@@ -9,10 +9,10 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import signal
-import sys
 import time
 
 from PIL import Image
@@ -21,7 +21,7 @@ from . import sensors
 from .canvas import compose
 from .config import Config
 from .ly import LyDisplay
-from .protocol import MAX_FRAME_BYTES, parse_handshake
+from .protocol import MAX_FRAME_BYTES
 
 LOG = logging.getLogger("trofeo.render")
 
@@ -30,7 +30,7 @@ QUALITY_LADDER = (85, 75, 65, 55, 45)
 
 def quantize(metrics: dict) -> dict:
     """Round values so tiny sensor jitter does not trigger a resend."""
-    out = {}
+    out: dict[str, object] = {}
     for k, v in metrics.items():
         if v is None:
             out[k] = None
@@ -47,7 +47,7 @@ class Renderer:
     def __init__(self, cfg: Config, ly: LyDisplay | None = None):
         self.cfg = cfg
         self.ly = ly or LyDisplay()
-        self._last = None
+        self._last: dict | None = None
         self._last_jpeg: bytes | None = None
         self._last_sent = 0.0
         self._stop = False
@@ -62,7 +62,9 @@ class Renderer:
             changed = metrics != self._last
             keepalive = (now - self._last_sent) >= self.cfg.keepalive_s
             min_interval = 1.0 / max(self.cfg.active_fps, 1.0)
-            if (changed or keepalive or self._last_jpeg is None) and (now - self._last_sent) >= min_interval:
+            if (changed or keepalive or self._last_jpeg is None) and (
+                now - self._last_sent
+            ) >= min_interval:
                 self._render_and_send(metrics)
                 self._last = metrics
             time.sleep(poll)
@@ -153,8 +155,6 @@ def main(argv=None) -> int:
     r = Renderer(cfg)
     signal.signal(signal.SIGINT, r.stop)
     signal.signal(signal.SIGTERM, r.stop)
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         r.run()
-    except KeyboardInterrupt:
-        pass
     return 0

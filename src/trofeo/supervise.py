@@ -9,8 +9,8 @@ systemd only restarts it if the supervisor itself crashes.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
-import shutil
 import signal
 import subprocess
 import sys
@@ -44,10 +44,8 @@ class Engine:
             return
         if self.proc.poll() is None:
             if self.proc.stdin:
-                try:
+                with contextlib.suppress(Exception):
                     self.proc.stdin.close()
-                except Exception:
-                    pass
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=STOP_TIMEOUT_S)

@@ -136,6 +136,36 @@ We keep a trcc-style memory tree so a new session/LLM picks up full context with
 - Keep a commit focused on one task — do not mix unrelated changes into one commit.
 - Match the repo's existing commit style / wording.
 
+## Bug-Analysis Gate (mandatory, before AND after every change)
+
+Never edit a file without first analysing it, and never finish without confirming you introduced no
+new bugs. This is a gate, not a style preference.
+
+**Before any change to a file, OUT LOUD:**
+- Read the file being changed AND its callers/consumers (don't grep words to conclude — trace the
+  data through each hop: signal -> handler -> execute -> service -> render; stop at the first hop you
+  haven't read).
+- Report findings by severity — **critical** (crash/data-loss/wrong output on the happy path),
+  **major** (breaks a supported path, edge conditions), **minor** (style/naming/UX) — and say which
+  one you're about to affect.
+
+**After the change + tests, again:**
+- Re-run the mechanical harness: `tools/quality_check.sh` (ruff + mypy + pytest).
+- Run the **semantic bug-hunt subagent** (below) on the changed area; it reports critical/major/minor
+  + any regressions. Fix or justify each one before declaring done.
+- Confirm explicitly: "no new bugs in <file>; change X tested".
+
+**Semantic bug-hunt subagent prompt (use as-is, replace `<scope>`):**
+> `Analyze this changed area for bugs. Be very thorough: open the file(s) and their callers, trace data
+> through every hop (signal -> handler -> execute -> service -> render). Report by severity: critical
+> (crash / data loss / wrong output on the happy path), major (breaks a supported path), minor
+> (style/naming). Then re-check the diff for regressions introduced by the change. Return a concise
+> list with file:line evidence and a verdict: CLEAN or issues to fix. Scope: <scope>`
+
+**Verification is by run, not prose.** A phase/change is "done" only when the harness is green and the
+subagent verdict is CLEAN (or every issue is fixed/justified). If you defer verification to hardware
+"later", say so out loud (that is the progress-theater trap).
+
 ## Critical Developer Workflows
 
 - Install: `pip install -e .` (or `pip install .`).

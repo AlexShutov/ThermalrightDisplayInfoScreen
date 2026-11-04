@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
-import shutil
-
 import psutil
 
 
@@ -23,7 +21,7 @@ def collect() -> dict:
     except Exception:
         m["swap"] = 0.0
     try:
-        m["disk"] = shutil.disk_usage("/").percent
+        m["disk"] = psutil.disk_usage("/").percent
     except Exception:
         m["disk"] = 0.0
     try:
@@ -41,7 +39,7 @@ def collect() -> dict:
     return m
 
 
-_last_net: dict | None = None
+_last_net: tuple[int, int] | None = None
 
 
 def _net_rate() -> float:

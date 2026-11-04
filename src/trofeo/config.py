@@ -28,7 +28,7 @@ class Config:
     background: dict | None = None  # {"type": "solid"|"image", "value": ...}
 
     @staticmethod
-    def load(path: str) -> "Config":
+    def load(path: str) -> Config:
         cfg = Config()
         if path and os.path.exists(path):
             with open(path) as fh:
