@@ -70,6 +70,7 @@ from review import (  # noqa: E402
     load_theme,
     load_themes,
     save_favorites,
+    set_dev_brightness,
 )
 
 THUMB_DIR = os.path.expanduser(
@@ -580,6 +581,16 @@ class PreviewApp(QWidget):
         self._slider.sliderReleased.connect(self._on_slider_released)
         pager.addWidget(self._slider, 1)
         v.addLayout(pager)
+        bri = QHBoxLayout()
+        bri_label = QLabel("Яркость %")
+        self._brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self._brightness_slider.setRange(0, 150)
+        self._brightness_slider.setValue(100)
+        self._brightness_slider.setToolTip("Brightness")
+        self._brightness_slider.valueChanged.connect(self._on_brightness_changed)
+        bri.addWidget(bri_label)
+        bri.addWidget(self._brightness_slider, 1)
+        v.addLayout(bri)
         self.status = QLabel()
         self.status.setObjectName("status")
         v.addWidget(self.status)
@@ -786,6 +797,7 @@ class PreviewApp(QWidget):
     def _preview_index(self, i: int) -> None:
         tid, cat = self.themes[i]
         self.preview.set_theme(tid)
+        self._brightness_slider.setValue(theme_db.get_brightness(tid))
         self.title.setText(f"{cat} · {tid}")
         self.number.setText(f"[{i + 1}/{len(self.themes)}]")
         self._update_mark(tid)
@@ -849,6 +861,14 @@ class PreviewApp(QWidget):
 
     def _set_status(self, text: str) -> None:
         self.status.setText(text)
+
+    def _on_brightness_changed(self, pct: int) -> None:
+        if not self.themes:
+            return
+        tid = self.themes[self.index][0]
+        theme_db.set_brightness(tid, pct)
+        with contextlib.suppress(Exception):
+            set_dev_brightness(self.device, pct)
 
     def prev(self) -> None:
         self.prev_key.flash()

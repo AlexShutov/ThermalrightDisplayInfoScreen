@@ -24,6 +24,7 @@ This is a dev/review tool -- not part of the shipped MIT package.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -111,6 +112,19 @@ def save_favorites(path: str, favorites: list[str], themes: dict[str, str]) -> N
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def set_dev_brightness(device: str, pct: int) -> None:
+    """Set native panel brightness to clamp(*pct*, 0..100).  Never raises."""
+    try:
+        pct = max(0, min(100, int(pct)))
+    except (TypeError, ValueError):
+        pct = 100
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            [TRCC, "display", "set-brightness", device, str(pct)],
+            capture_output=True, text=True, check=False,
+        )
 
 
 def load_theme(device: str, theme_id: str) -> bool:
