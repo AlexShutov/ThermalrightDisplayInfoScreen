@@ -99,11 +99,17 @@ strategy + concrete rules: `memory/testing.md`.
   base-video decode + Qt overlay are the next refinement on this same seam.
 
 ## Open questions (NOT yet decided — a new session must treat these as open, not assumed)
-- **File layout:** where the new code lives. Candidates: a new installable package (e.g.
-  `src/manager/` + a separate console command), alongside the existing `src/trofeo/`. Not chosen.
-- **Manager -> trcc mechanism:** drive `trcc daemon` via its CLI triggers (`trcc display play d037`)
-  or via trcc's own FastAPI REST API (which dispatches Commands on the App). Not chosen.
-- **Qt render details:** QPainter widgets vs QML, DPI/devicePixelRatio for the 1920x440 canvas, where
-  the Qt module lives (own GPL repo vs `dev/`). Not chosen.
-- **How the module gets its composited frame into the panel while the theme plays** — exact
-  FrameSource/background protocol to confirm in Phase 0. Investigate trcc internals, don't assume.
+- **File layout:** *solved in Phase 1* — the manager is a new package **`src/manager/`** (console script `trofeo-manager`), sharing the ports in `src/trofeo/ports.py`; `manager` -> `trofeo.ports` is a one-way import (no cycle). setuptools `where=["src"]` discovers both. FastAPI/uvicorn/pydantic are now **base runtime deps** (manager is a first-class component), not an optional extra.
+- **Manager -> trcc mechanism:** drive `trcc daemon` via its CLI triggers (`trcc display play d037`) or via trcc's own FastAPI REST API (which dispatches Commands on the App). Not chosen.
+- **Qt render details:** QPainter widgets vs QML, DPI/devicePixelRatio for the 1920x440 canvas, where the Qt module lives (own GPL repo vs `dev/`). Not chosen.
+- **How the module gets its composited frame into the panel while the theme plays** — exact FrameSource/background protocol to confirm in Phase 0. Investigate trcc internals, don't assume.
+
+## Phase 1 — implemented (verified headless)
+- `src/manager/` FastAPI + uvicorn (single async worker, `loop="asyncio"`), pydantic v2 models.
+- Request-scoped/last-wins state under one `asyncio.Lock` (no global accumulation, no per-request threads).
+- Endpoints implemented: `GET /health`, `POST /dashboard/setup`, `POST /dashboard/update`, `POST /settings`, `POST /theme`. pydantic `dict[Literal["day","night"], ...]` rejects unknown modes (422).
+- Body cap: **stream-bounded** middleware closes the chunked/CL-less bypass (reject once over `body_limit_bytes`, memory bounded by the limit) and keeps the fast-path `content-length` rejection (413). Optional `Authorization: Bearer <token>` via `auth_token`.
+- `switch_theme` is an injected `Callable[[str], None]` (default no-op); called **off-loop** via `asyncio.to_thread` bounded by `switch_timeout_s`, and non-fatal (a hung/bad trcc call logs + last state holds) — never freezes the worker.
+- Bridge: `src/manager/state.py` pure `bridge_dict(state)` (data-plane payload without seq) -> `src/manager/store.py` `AtomicStateFile` (temp + `fsync` + `os.replace`, monotonic `seq` recovered across restarts). `/health` seeds `last_seq` from `store.read()` so it is never stale after a restart.
+- Palette/theme derivation: `active_palette` / `active_theme` from the current mode; `/settings` recomputes for the current mode; `/theme` commits state then switches.
+- Tests (`test_manager_state.py`, `test_manager_store.py`, `test_manager_api.py`) cover the pure model, atomic seq, and the full HTTP contract via `TestClient` + fakes (33 tests total green; `ruff`/`mypy` clean).
