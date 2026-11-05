@@ -1,0 +1,3 @@
+[submodule "ActivityProgressRingsQt"]
+	path = ActivityProgressRingsQt
+	url = https://github.com/AlexShutov/ActivityProgressRingsQt.git
