@@ -248,10 +248,15 @@ class _DockWindow(QWidget):
     """
 
     closed = Signal()
+    resized = Signal()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.closed.emit()
         event.accept()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.resized.emit()
 
 
 class FavoriteTile(QWidget):
@@ -785,7 +790,6 @@ class PreviewApp(QWidget):
 
     def _build_dock_panel(self) -> None:
         self._dock_open = False
-        self._dock_placed = False
         self._dock_tiles: dict[str, FavoriteTile] = {}
         self._dock_panel = _DockWindow()
         self._dock_panel.setObjectName("dock")
@@ -835,19 +839,44 @@ class PreviewApp(QWidget):
         self._favs_grid = QGridLayout(self._favs_container)
         self._favs_grid.setContentsMargins(6, 0, 0, 0)
         self._favs_grid.setSpacing(8)
-        self._favs_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Center the grid horizontally, pinned to the top, so leftover width that
+        # is too small for one more column is split evenly on both sides.
+        self._favs_grid.setAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        )
         self._favs_scroll.setWidget(self._favs_container)
         pl.addWidget(self._favs_scroll, 1)
+        self._dock_cols = DOCK_COLS
         self._dock_panel.setMinimumWidth(DOCK_WIDTH)
         self._dock_panel.resize(DOCK_WIDTH, 560)
         self._dock_panel.closed.connect(self._on_dock_closed)
+        self._dock_panel.resized.connect(self._on_dock_resized)
 
-    def _place_dock(self) -> None:
-        if self._dock_placed:
+    def _compute_cols(self) -> int:
+        """Number of tile columns that fit the current panel width."""
+        avail = self._favs_scroll.viewport().width() - 6
+        spacing = self._favs_grid.spacing()
+        return max(1, (avail + spacing) // (TILE_W + spacing))
+
+    def _on_dock_resized(self) -> None:
+        if not self._dock_open:
+            return
+        cols = self._compute_cols()
+        if cols == self._dock_cols:
+            return
+        self._dock_cols = cols
+        self._refresh_dock()
+
+    def _reposition_dock(self) -> None:
+        """Dock the side window to the right edge of the main window."""
+        if not getattr(self, "_dock_open", False) or not self._dock_panel.isVisible():
             return
         geo = self.geometry()
-        self._dock_panel.move(geo.right() + 8, geo.y())
-        self._dock_placed = True
+        screen = QApplication.screenAt(geo.center())
+        x = geo.right() + 8
+        if screen is not None:
+            x = min(x, screen.availableGeometry().right() - self._dock_panel.width())
+        self._dock_panel.move(x, geo.y())
 
     def _on_dock_closed(self) -> None:
         self._dock_open = False
@@ -857,9 +886,9 @@ class PreviewApp(QWidget):
         self._dock_open = not self._dock_open
         self._dock_toggle.animate_to(1.0 if self._dock_open else 0.0)
         if self._dock_open:
-            self._place_dock()
             self._dock_panel.show()
             self._dock_panel.raise_()
+            self._reposition_dock()
             self._refresh_dock()
         else:
             self._dock_panel.hide()
@@ -868,6 +897,7 @@ class PreviewApp(QWidget):
         self._dock_header.setText(self._tab_bar.tabText(self._dock_tab))
         if not self._dock_open:
             return
+        self._dock_cols = self._compute_cols()
         current = self.themes[self.index][0] if self.themes else None
         if self._dock_tab == FAV_TAB:
             show = [tid for tid in self._fav if tid in [t[0] for t in self._all_themes]]
@@ -885,7 +915,7 @@ class PreviewApp(QWidget):
         for i, tid in enumerate(show):
             tile = self._dock_tiles[tid]
             tile.set_selected(tid == current)
-            self._favs_grid.addWidget(tile, i // DOCK_COLS, i % DOCK_COLS)
+            self._favs_grid.addWidget(tile, i // self._dock_cols, i % self._dock_cols)
             tile.show()
         for tid, tile in self._dock_tiles.items():
             if tid not in show:
@@ -1060,6 +1090,14 @@ class PreviewApp(QWidget):
         self._teardown_brightness()
         self._dock_panel.close()
         super().closeEvent(event)
+
+    def moveEvent(self, event) -> None:  # noqa: N802
+        super().moveEvent(event)
+        self._reposition_dock()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._reposition_dock()
 
     def _update_mark(self, tid: str) -> None:
         liked = tid in self.fav
