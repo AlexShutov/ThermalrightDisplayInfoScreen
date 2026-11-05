@@ -21,11 +21,33 @@ from . import sensors
 from .canvas import compose
 from .config import Config
 from .ly import LyDisplay
+from .ports import FrameSink, SensorSource
 from .protocol import MAX_FRAME_BYTES
+from .sensors import PsutilSensorSource
 
 LOG = logging.getLogger("trofeo.render")
 
 QUALITY_LADDER = (85, 75, 65, 55, 45)
+
+
+def should_render(
+    *,
+    metrics: dict,
+    last: dict | None,
+    last_sent: float,
+    now: float,
+    keepalive_s: float,
+    active_fps: float,
+    last_jpeg: bytes | None,
+) -> bool:
+    """Decide whether a new frame must be rendered+sent (dirty or keepalive gate).
+
+    Pure decision so the reactive render loop is testable without a device.
+    """
+    changed = metrics != last
+    keepalive = (now - last_sent) >= keepalive_s
+    min_interval = 1.0 / max(active_fps, 1.0)
+    return (changed or keepalive or last_jpeg is None) and (now - last_sent) >= min_interval
 
 
 def quantize(metrics: dict) -> dict:
@@ -44,9 +66,15 @@ def quantize(metrics: dict) -> dict:
 
 
 class Renderer:
-    def __init__(self, cfg: Config, ly: LyDisplay | None = None):
+    def __init__(
+        self,
+        cfg: Config,
+        sink: FrameSink | None = None,
+        source: SensorSource | None = None,
+    ):
         self.cfg = cfg
-        self.ly = ly or LyDisplay()
+        self.sink: FrameSink = sink or LyDisplay()
+        self.source: SensorSource = source or PsutilSensorSource()
         self._last: dict | None = None
         self._last_jpeg: bytes | None = None
         self._last_sent = 0.0
@@ -57,14 +85,17 @@ class Renderer:
         self._connect()
         poll = self.cfg.sensor_poll_s
         while not self._stop:
-            metrics = quantize(sensors.collect())
+            metrics = quantize(self.source.collect())
             now = time.monotonic()
-            changed = metrics != self._last
-            keepalive = (now - self._last_sent) >= self.cfg.keepalive_s
-            min_interval = 1.0 / max(self.cfg.active_fps, 1.0)
-            if (changed or keepalive or self._last_jpeg is None) and (
-                now - self._last_sent
-            ) >= min_interval:
+            if should_render(
+                metrics=metrics,
+                last=self._last,
+                last_sent=self._last_sent,
+                now=now,
+                keepalive_s=self.cfg.keepalive_s,
+                active_fps=self.cfg.active_fps,
+                last_jpeg=self._last_jpeg,
+            ):
                 self._render_and_send(metrics)
                 self._last = metrics
             time.sleep(poll)
@@ -74,7 +105,7 @@ class Renderer:
         img = compose(metrics, self.cfg)
         jpeg = self._encode_within_budget(img)
         try:
-            self.ly.send(jpeg)
+            self.sink.send(jpeg)
             self._last_jpeg = jpeg
             self._last_sent = time.monotonic()
         except Exception as e:
@@ -101,8 +132,8 @@ class Renderer:
     def _connect(self) -> None:
         while not self._stop:
             try:
-                self.ly.close()
-                info = self.ly.connect(retries=20, delay_s=self.cfg.sensor_poll_s)
+                self.sink.close()
+                info = self.sink.connect(retries=20, delay_s=self.cfg.sensor_poll_s)
                 LOG.info("connected: PM=%d SUB=%d size=%dx%d", info["pm"], info["sub"],
                          info["width"], info["height"])
                 self.cfg.width = info["width"]

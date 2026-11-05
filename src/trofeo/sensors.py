@@ -5,6 +5,13 @@ from __future__ import annotations
 import psutil
 
 
+class PsutilSensorSource:
+    """``SensorSource`` adapter over psutil (best-effort, no hardware needed)."""
+
+    def collect(self) -> dict:
+        return collect()
+
+
 def collect() -> dict:
     """Return a snapshot of displayed metrics. Missing values are None."""
     m: dict = {}
