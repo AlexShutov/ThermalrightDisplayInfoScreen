@@ -240,6 +240,20 @@ class DockToggle(QPushButton):
         painter.end()
 
 
+class _DockWindow(QWidget):
+    """Top-level side panel window; emits ``closed`` when its own X is clicked.
+
+    Kept as a separate top-level ``Qt.Window`` so opening/resizing it never
+    touches the main app window (which stays a fixed, independent size).
+    """
+
+    closed = Signal()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.closed.emit()
+        event.accept()
+
+
 class FavoriteTile(QWidget):
     """One liked-theme tile: rounded preview + id, green border when selected."""
 
@@ -765,17 +779,18 @@ class PreviewApp(QWidget):
         self._build_dock_panel()
         self._dock_toggle = DockToggle(self)
         self._dock_toggle.clicked.connect(self._toggle_dock)
-        root.addWidget(self._dock_panel)
         root.addWidget(self._dock_toggle)
-        self.setMinimumSize(700, 500)
+        self.setMinimumSize(560, 480)
         self._refresh_dock()
 
     def _build_dock_panel(self) -> None:
         self._dock_open = False
-        self._dock_anim: QPropertyAnimation | None = None
+        self._dock_placed = False
         self._dock_tiles: dict[str, FavoriteTile] = {}
-        self._dock_panel = QWidget(self)
+        self._dock_panel = _DockWindow()
         self._dock_panel.setObjectName("dock")
+        self._dock_panel.setWindowTitle("Понравилось")
+        self._dock_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._dock_panel.setStyleSheet(
             "QWidget#dock { background: #20242c; border: 1px solid #2a3040; "
             "border-radius: 8px; }"
@@ -786,7 +801,10 @@ class PreviewApp(QWidget):
             "border-top-right-radius: 6px; margin-right: 2px; }"
             "QTabBar::tab:selected { background: #35d08a; color: #0b0f14; "
             "font-weight: 700; }"
-            "QTabBar::scroll-button { background: transparent; }"
+            "QTabBar::scroll-button { background: #2a3040; color: #c3cbdb; "
+            "border-radius: 4px; margin: 1px; }"
+            "QTabBar::scroll-button:disabled { background: transparent; color: #3b414d; }"
+            "QTabBar::scroll-button:horizontal { min-width: 16px; }"
             "QScrollArea { background: transparent; border: none; }"
             "QScrollArea > QWidget > QWidget { background: transparent; }"
         )
@@ -800,6 +818,7 @@ class PreviewApp(QWidget):
         self._tab_bar.setObjectName("dock_tabs")
         self._tab_bar.setExpanding(False)
         self._tab_bar.setUsesScrollButtons(True)
+        self._tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
         for label in ("Все", "Тёмная", "Светлая", "Тёмная со вспышками", "Понравилось"):
             self._tab_bar.addTab(label)
         self._tab_bar.setCurrentIndex(self._dock_tab)
@@ -819,32 +838,31 @@ class PreviewApp(QWidget):
         self._favs_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._favs_scroll.setWidget(self._favs_container)
         pl.addWidget(self._favs_scroll, 1)
-        self._dock_panel.setMinimumWidth(0)
-        self._dock_panel.setMaximumWidth(0)
+        self._dock_panel.setMinimumWidth(DOCK_WIDTH)
+        self._dock_panel.resize(DOCK_WIDTH, 560)
+        self._dock_panel.closed.connect(self._on_dock_closed)
+
+    def _place_dock(self) -> None:
+        if self._dock_placed:
+            return
+        geo = self.geometry()
+        self._dock_panel.move(geo.right() + 8, geo.y())
+        self._dock_placed = True
+
+    def _on_dock_closed(self) -> None:
+        self._dock_open = False
+        self._dock_toggle.animate_to(0.0)
 
     def _toggle_dock(self) -> None:
         self._dock_open = not self._dock_open
         self._dock_toggle.animate_to(1.0 if self._dock_open else 0.0)
-        target = DOCK_WIDTH if self._dock_open else 0
-        if self._dock_anim is None:
-            self._dock_anim = QPropertyAnimation(self._dock_panel, b"maximumWidth", self)
-            self._dock_anim.setDuration(180)
-            self._dock_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-            self._dock_anim.valueChanged.connect(self._on_dock_anim)
-        self._dock_anim.stop()
-        self._dock_anim.setStartValue(self._dock_panel.maximumWidth())
-        self._dock_anim.setEndValue(target)
-        self._dock_anim.start()
         if self._dock_open:
+            self._place_dock()
+            self._dock_panel.show()
+            self._dock_panel.raise_()
             self._refresh_dock()
-
-    def _on_dock_anim(self, value: float) -> None:
-        # Keep the main window size fixed; the panel's own width is driven by
-        # min==max so it "stretches" within the fixed window (the preview area
-        # compresses to make room) rather than growing the window.
-        v = int(value)
-        self._dock_panel.setMinimumWidth(v)
-        self._dock_panel.setMaximumWidth(v)
+        else:
+            self._dock_panel.hide()
 
     def _refresh_dock(self) -> None:
         self._dock_header.setText(self._tab_bar.tabText(self._dock_tab))
@@ -1040,6 +1058,7 @@ class PreviewApp(QWidget):
         self._loader.stop()
         self._loader.wait(3000)
         self._teardown_brightness()
+        self._dock_panel.close()
         super().closeEvent(event)
 
     def _update_mark(self, tid: str) -> None:
