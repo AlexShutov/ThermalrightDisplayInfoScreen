@@ -94,12 +94,15 @@ class FakeStore:
         self._state: dict | None = None
         self._seq = 0
 
-    def write(self, state: dict) -> int:
-        self._seq += 1
+    def write(self, state: dict, seq: int | None = None) -> int:
         merged = dict(state)
-        merged["seq"] = self._seq
+        if seq is None:
+            self._seq += 1
+            merged["seq"] = self._seq
+        else:
+            merged["seq"] = seq
         self._state = merged
-        return self._seq
+        return merged["seq"]
 
     def read(self) -> dict | None:
         return dict(self._state) if self._state is not None else None

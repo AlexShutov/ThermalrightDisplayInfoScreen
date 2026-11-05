@@ -1,0 +1,8 @@
+# Stub data source config (YAML-first). Override with `hardwarescreen-stubdata --config`.
+manager_url: http://127.0.0.1:8123
+poll_s: 1.0
+# seed: 42            # uncomment for a reproducible sequence
+num_gauges: 6
+switch_probability: 0.02
+value_min: 0.0
+value_max: 100.0

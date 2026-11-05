@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import contextlib
-import io
 import logging
 import signal
 import time
@@ -20,14 +19,12 @@ from PIL import Image
 from . import sensors
 from .canvas import compose
 from .config import Config
+from .imageutil import encode_within_budget
 from .ly import LyDisplay
 from .ports import FrameSink, SensorSource
-from .protocol import MAX_FRAME_BYTES
 from .sensors import PsutilSensorSource
 
 LOG = logging.getLogger("hardwarescreen.render")
-
-QUALITY_LADDER = (85, 75, 65, 55, 45)
 
 
 def should_render(
@@ -114,19 +111,7 @@ class Renderer:
 
     def _encode_within_budget(self, img: Image.Image) -> bytes:
         """JPEG-encode, shrinking quality/scale until within the frame budget."""
-        budget = self.cfg.max_frame_bytes or MAX_FRAME_BYTES
-        for q in QUALITY_LADDER:
-            jpeg = _jpeg(img, q)
-            if len(jpeg) <= budget:
-                return jpeg
-        scale = img
-        for _ in range(8):  # fall back to downscaling
-            scale = scale.resize((int(scale.width * 0.85), int(scale.height * 0.85)))
-            for q in (70, 60, 50):
-                jpeg = _jpeg(scale, q)
-                if len(jpeg) <= budget:
-                    return jpeg
-        raise RuntimeError("could not encode within frame budget")
+        return encode_within_budget(img, self.cfg.max_frame_bytes)
 
     # -- connection -----------------------------------------------------
     def _connect(self) -> None:
@@ -160,12 +145,6 @@ def preview(argv=None) -> int:
     img.save(args.out)
     print(f"saved {args.out} {img.width}x{img.height}")
     return 0
-
-
-def _jpeg(img: Image.Image, quality: int) -> bytes:
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=quality)
-    return buf.getvalue()
 
 
 def main(argv=None) -> int:

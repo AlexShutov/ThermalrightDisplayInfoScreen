@@ -21,6 +21,7 @@ from hardwarescreen.ports import StateStore
 
 from .config import Config
 from .state import Gauge, ManagerState, bridge_dict, merge_values
+from .trcc import TrccThemeSwitcher
 
 LOG = logging.getLogger("manager.api")
 
@@ -79,6 +80,13 @@ def create_app(
     # Recover the current seq from the bridge so /health never reports a stale
     # seq after a restart (the store advances seq monotonically across runs).
     last_seq = int((store.read() or {}).get("seq", 0))
+    # Build the trcc trigger from the LIVE state.themes (not the startup Config)
+    # so a runtime POST /settings change is honoured by the actual switch.
+    switch_theme = switch_theme or (
+        TrccThemeSwitcher(cfg, resolver=lambda m: str(state.themes.get(m, "")))
+        if cfg.theme_cmd
+        else None
+    )
     switcher: Callable[[str], None] = switch_theme or (lambda mode: None)
 
     def _authorize(request: Request) -> None:

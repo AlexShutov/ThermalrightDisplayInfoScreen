@@ -37,6 +37,10 @@ class Config:
     default_mode: str = "day"
     themes: dict[str, str] = field(default_factory=lambda: {"day": "d037", "night": "d029"})
     adapter: dict[str, dict] = field(default_factory=_default_palettes)
+    # Optional trcc switch trigger (CLI): e.g. ["trcc", "display", "play", "{theme}"].
+    # "{theme}" is replaced with the mode's theme id from `themes`. When None, /theme
+    # only persists state (no daemon call).
+    theme_cmd: list[str] | None = None
     # Set to a token to require `Authorization: Bearer <token>` (LAN producers).
     auth_token: str | None = None
 
