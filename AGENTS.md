@@ -35,7 +35,7 @@ A **portable, self-contained app** that drives the **Thermalright Trofeo Vision 
 
 ## Essential Architecture
 
-- **`src/trofeo/`** package (installable, console script `trofeo`):
+- **`src/hardwarescreen/`** package (installable, console script `hardwarescreen`):
   - `supervise.py` — USB-lifetime supervisor (state machine `WAIT ⟷ RUN`; poll `1s`, backoff;
     starts/stops the engine; handles SIGINT/SIGTERM).
   - `render.py` — **reactive renderer**: collects metric changes → dirty-check → re-render; plus a
@@ -110,7 +110,7 @@ We keep a trcc-style memory tree so a new session/LLM picks up full context with
 
 - **Runtime is pure Python.** Deps: `pyusb`, `pillow`, `psutil` (+ optional `trcc-linux`). No LLM, no
   AI SDK, no generated-runtime dependency; `pip install .` must be enough to run.
-- **`src/` layout + `pyproject.toml`.** Entry point: `trofeo = trofeo.__main__:main`.
+- **`src/` layout + `pyproject.toml`.** Entry point: `hardwarescreen = hardwarescreen.__main__:main`.
 - **YAML-first config** (`config.yaml`); do not hardcode values; add options to config first, then
   load them in `config.py`.
 - **`max_frame_bytes = 450000`** everywhere — the encode path must shrink (quality/scale) until the
@@ -169,9 +169,9 @@ subagent verdict is CLEAN (or every issue is fixed/justified). If you defer veri
 ## Critical Developer Workflows
 
 - Install: `pip install -e .` (or `pip install .`).
-- Run the dashboard client: `trofeo run` (reactive renderer + keepalive + reconnect).
-- Run the supervisor: `trofeo supervise` (USB lifecycle around an engine).
-- Config: edit `config.yaml`, then run; `trofeo --version`.
+- Run the dashboard client: `hardwarescreen run` (reactive renderer + keepalive + reconnect).
+- Run the supervisor: `hardwarescreen supervise` (USB lifecycle around an engine).
+- Config: edit `config.yaml`, then run; `hardwarescreen --version`.
 - Device test (dev, no app): `python tools/probe_ly.py` (handshake + frame ladder),
   `python tools/probe_fps.py` (measure ceiling).
 
@@ -184,10 +184,10 @@ subagent verdict is CLEAN (or every issue is fixed/justified). If you defer veri
 
 ## Reference Files
 
-- USB/protocol + transport: `src/trofeo/ly.py`, `protocol.py`
-- Reconnect: `src/trofeo/supervise.py`
-- Reactive render + keepalive + budget: `src/trofeo/render.py`
-- Config: `src/trofeo/config.py`
-- Deploy: `deploy/trofeo-supervisor.service`, `deploy/99-trofeo-lcd.rules`
+- USB/protocol + transport: `src/hardwarescreen/ly.py`, `protocol.py`
+- Reconnect: `src/hardwarescreen/supervise.py`
+- Reactive render + keepalive + budget: `src/hardwarescreen/render.py`
+- Config: `src/hardwarescreen/config.py`
+- Deploy: `deploy/hardwarescreen-supervisor.service`, `deploy/99-hardwarescreen-lcd.rules`
 - Upstream protocol reference (read-only): `Lexonight1/thermalright-trcc-linux`
   (`doc/PROTOCOL_USBLCDNEW.md`, `src/trcc/adapters/device/ly_lcd.py`)

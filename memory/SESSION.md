@@ -63,6 +63,6 @@ File layout for new code, manager->trcc mechanism (CLI trigger vs trcc API), Qt 
   (theme background + Qt overlay -> panel), then write the phase list into todowrite and begin.
 
 ## Handoff notes
-- USB access denied for trcc daemon -> a `trofeo run`/`supervise` client holds the device; stop it.
+- USB access denied for trcc daemon -> a `hardwarescreen run`/`supervise` client holds the device; stop it.
 - Daemon can hang re-fetching a poisoned cache (e.g. `e005.mp4` as 404 HTML); retry recovers.
 - Test device (no app): `python tools/probe_ly.py`, `python tools/probe_fps.py`.

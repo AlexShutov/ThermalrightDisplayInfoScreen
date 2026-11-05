@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from trofeo.ports import StateStore
+from hardwarescreen.ports import StateStore
 
 from .config import Config
 from .state import Gauge, ManagerState, bridge_dict, merge_values
@@ -120,13 +120,13 @@ def create_app(
         except Exception as e:  # a bad trcc call must not kill the dashboard
             LOG.warning("theme switch failed (%s); last state holds", e)
 
-    app = FastAPI(title="Trofeo Theme Manager", version="0.1.0")
+    app = FastAPI(title="HardwareScreen Theme Manager", version="0.1.0")
     app.state.store = store
     app.middleware("http")(_limit_body)
 
     @app.get("/")
     def root():
-        return {"service": "trofeo-manager", "docs": "/docs"}
+        return {"service": "hardwarescreen-manager", "docs": "/docs"}
 
     @app.get("/health", dependencies=[Depends(_authorize)])
     async def health():

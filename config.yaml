@@ -1,4 +1,4 @@
-# Default dashboard config (YAML-first). Override with `trofeo run --config`.
+# Default dashboard config (YAML-first). Override with `hardwarescreen run --config`.
 width: 1920
 height: 440
 keepalive_s: 2.0

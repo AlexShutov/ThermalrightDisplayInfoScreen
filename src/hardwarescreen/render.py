@@ -25,7 +25,7 @@ from .ports import FrameSink, SensorSource
 from .protocol import MAX_FRAME_BYTES
 from .sensors import PsutilSensorSource
 
-LOG = logging.getLogger("trofeo.render")
+LOG = logging.getLogger("hardwarescreen.render")
 
 QUALITY_LADDER = (85, 75, 65, 55, 45)
 
@@ -150,7 +150,7 @@ class Renderer:
 def preview(argv=None) -> int:
     """Compose a dashboard frame and save it — no USB, no device needed."""
     import argparse
-    ap = argparse.ArgumentParser(prog="trofeo preview")
+    ap = argparse.ArgumentParser(prog="hardwarescreen preview")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--out", default="preview.png")
     args = ap.parse_args(argv)
@@ -170,7 +170,7 @@ def _jpeg(img: Image.Image, quality: int) -> bytes:
 
 def main(argv=None) -> int:
     import argparse
-    ap = argparse.ArgumentParser(prog="trofeo run")
+    ap = argparse.ArgumentParser(prog="hardwarescreen run")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--max-frame-bytes", type=int, default=None)
     ap.add_argument("--keepalive", type=float, default=None)

@@ -6,11 +6,11 @@ dashboard): the same toolset can drive other dashboards/adapters, e.g. a work di
 about meetings. The JSON endpoints are deliberately generic so producers carry the domain, not the
 manager.
 
-## Relationship to existing `src/trofeo/`
-- `src/trofeo/` (thin client `trofeo run` + `supervise` + `canvas`) stays separate; it is the
+## Relationship to existing `src/hardwarescreen/`
+- `src/hardwarescreen/` (thin client `hardwarescreen run` + `supervise` + `canvas`) stays separate; it is the
   self-contained fallback (own LY transport, no trcc).
 - The new manager + Qt module run on top of `trcc daemon`. **USB is exclusive:** the device is held
-  by EITHER a thin client (`trofeo run`) OR `trcc daemon` — never both. Running both -> trcc daemon
+  by EITHER a thin client (`hardwarescreen run`) OR `trcc daemon` — never both. Running both -> trcc daemon
   gets `Access denied`. The manager assumes `trcc daemon` owns the panel.
 
 ## Structure
@@ -99,7 +99,7 @@ strategy + concrete rules: `memory/testing.md`.
   base-video decode + Qt overlay are the next refinement on this same seam.
 
 ## Open questions (NOT yet decided — a new session must treat these as open, not assumed)
-- **File layout:** *solved in Phase 1* — the manager is a new package **`src/manager/`** (console script `trofeo-manager`), sharing the ports in `src/trofeo/ports.py`; `manager` -> `trofeo.ports` is a one-way import (no cycle). setuptools `where=["src"]` discovers both. FastAPI/uvicorn/pydantic are now **base runtime deps** (manager is a first-class component), not an optional extra.
+- **File layout:** *solved in Phase 1* — the manager is a new package **`src/manager/`** (console script `hardwarescreen-manager`), sharing the ports in `src/hardwarescreen/ports.py`; `manager` -> `hardwarescreen.ports` is a one-way import (no cycle). setuptools `where=["src"]` discovers both. FastAPI/uvicorn/pydantic are now **base runtime deps** (manager is a first-class component), not an optional extra.
 - **Manager -> trcc mechanism:** drive `trcc daemon` via its CLI triggers (`trcc display play d037`) or via trcc's own FastAPI REST API (which dispatches Commands on the App). Not chosen.
 - **Qt render details:** QPainter widgets vs QML, DPI/devicePixelRatio for the 1920x440 canvas, where the Qt module lives (own GPL repo vs `dev/`). Not chosen.
 - **How the module gets its composited frame into the panel while the theme plays** — exact FrameSource/background protocol to confirm in Phase 0. Investigate trcc internals, don't assume.

@@ -3,7 +3,7 @@
 ## Runtime / code
 - Pure Python; deps `pyusb`, `pillow`, `psutil` (+ optional `trcc-linux`). No AI/LLM at build/run;
   `pip install .` must run it.
-- `src/` layout, `pyproject.toml`, entry point `trofeo = trofeo.__main__:main`.
+- `src/` layout, `pyproject.toml`, entry point `hardwarescreen = hardwarescreen.__main__:main`.
 - YAML-first config (`config.yaml`); add options to config before loading in `config.py`.
 - Keep platform specifics (ffmpeg hwaccel, headless Qt `QT_QPA_PLATFORM=offscreen`, DPI/devicePixelRatio,
   sensors temp branch, Python version, udev/systemd) behind `config.py` so the port is config-only.

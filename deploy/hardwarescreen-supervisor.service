@@ -4,11 +4,11 @@ After=multi-user.target
 
 [Service]
 Type=simple
-# Adjust the venv/project paths to your install. `trofeo run` handles USB
+# Adjust the venv/project paths to your install. `hardwarescreen run` handles USB
 # reconnect itself; Restart only kicks in if the process crashes.
 # Alternative: wrap trcc-linux as the engine (verified: connects as 11.3/1920x440/model 69):
-#   ExecStart=%h/.venv/bin/trofeo supervise --cmd %h/.venv-trcc/bin/trcc daemon
-ExecStart=%h/.venv-trcc/bin/trofeo run --config %h/ThermaltakeDisplay/config.yaml
+#   ExecStart=%h/.venv/bin/hardwarescreen supervise --cmd %h/.venv-trcc/bin/trcc daemon
+ExecStart=%h/.venv-trcc/bin/hardwarescreen run --config %h/ThermaltakeDisplay/config.yaml
 Restart=on-failure
 RestartSec=2
 

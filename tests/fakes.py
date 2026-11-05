@@ -1,11 +1,11 @@
-"""Fakes implementing the trofeo ports (no USB / psutil / trcc / filesystem).
+"""Fakes implementing the hardwarescreen ports (no USB / psutil / trcc / filesystem).
 
 Used by the pytest suite so every critical behavior is verified without hardware.
 """
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
-from trofeo.protocol import MAX_FRAME_BYTES
+from hardwarescreen.protocol import MAX_FRAME_BYTES
 
 
 class MockPanel:

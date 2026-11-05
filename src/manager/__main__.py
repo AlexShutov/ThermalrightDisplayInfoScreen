@@ -13,7 +13,7 @@ from .store import AtomicStateFile
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="trofeo-manager")
+    ap = argparse.ArgumentParser(prog="hardwarescreen-manager")
     ap.add_argument("--config", default="manager.yaml")
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)

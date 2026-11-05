@@ -17,7 +17,7 @@ Overlay / composite split (the "obvious" design):
 
 The video path is a stand-in for the manager's bridge state: the real adapter
 gets the active theme path (and palette) from the manager's atomic state file.
-Here it defaults to ``$TROFEO_THEME_VIDEO`` or the d029 night theme.
+Here it defaults to ``$HARDWARESCREEN_THEME_VIDEO`` or the d029 night theme.
 
 GPL-3.0 -- imports trcc internals (like the probe). Never copied into MIT sources.
 """
@@ -35,7 +35,7 @@ from trcc.adapters.modules._base import BaseModule
 from trcc.core.models import RawFrame
 from trcc.core.ports import FrameSource
 
-log = logging.getLogger("trofeo.composite")
+log = logging.getLogger("hardwarescreen.composite")
 
 _DEFAULT_THEME_VIDEO = os.path.expanduser(
     "~/Library/Application Support/trcc/data/web/1920440/d029.mp4"
@@ -175,7 +175,7 @@ class CompositeModule(BaseModule, key="composite"):
             return
         key = keys[0]
         size = host.panels.size(key) or (1920, 440)
-        video = os.environ.get("TROFEO_THEME_VIDEO", _DEFAULT_THEME_VIDEO)
+        video = os.environ.get("HARDWARESCREEN_THEME_VIDEO", _DEFAULT_THEME_VIDEO)
         self._key = key
         self._source = _ThemeVideo(video, *size)
         host.background.show(key, self._source, fps=15.0)

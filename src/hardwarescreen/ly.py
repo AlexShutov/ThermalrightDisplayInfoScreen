@@ -26,7 +26,7 @@ from .protocol import (
     parse_handshake,
 )
 
-LOG = logging.getLogger("trofeo.ly")
+LOG = logging.getLogger("hardwarescreen.ly")
 
 
 def find(vid: int = VID, pid: int = PID):

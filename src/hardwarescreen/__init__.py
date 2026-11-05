@@ -1,4 +1,5 @@
-"""Trofeo Vision 11.3 LCD dashboard — reactive, reconnect-aware, portable.
+"""HardwareScreen — reactive, reconnect-aware dashboard for the Thermalright
+Trofeo Vision 11.3 LCD.
 
 The runtime is plain Python (pyusb + Pillow + psutil + YAML). No LLM/AI is
 needed at build or run time.

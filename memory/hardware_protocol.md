@@ -16,7 +16,7 @@
 - Revert-to-logo: panel returns to logo ~2-3 s after last frame -> keepalive every ~1.5-2 s.
 
 ## Containment rules
-- USB lifecycle only in `src/trofeo/supervise.py`. Don't scatter it.
+- USB lifecycle only in `src/hardwarescreen/supervise.py`. Don't scatter it.
 - `max_frame_bytes = 450000` everywhere; keepalive default `keepalive_s = 2.0`.
-- Usb contention: thin client `trofeo run` holds the device -> trcc daemon gets `Access denied`.
+- Usb contention: thin client `hardwarescreen run` holds the device -> trcc daemon gets `Access denied`.
   Stop the client to free USB.

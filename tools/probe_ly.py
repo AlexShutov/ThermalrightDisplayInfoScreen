@@ -126,7 +126,7 @@ def main():
     print("(cycling until Ctrl+C)")
     while True:
         for i, q in enumerate(ladder):
-            img = make_frame(w, h, f"FRAME {i+1}  Q={q}", "trofeo noise probe")
+            img = make_frame(w, h, f"FRAME {i+1}  Q={q}", "hardwarescreen noise probe")
             size, frame_size, ack = send_frame(dev, img, q)
             kb = size / 1024
             print(f"  #{i+1} Q={q}: jpeg={kb:.0f}KB usb_frame={frame_size}B ack[{ack}]")

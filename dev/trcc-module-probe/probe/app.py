@@ -16,7 +16,7 @@ from trcc.adapters.modules._base import BaseModule
 from trcc.core.models import RawFrame
 from trcc.core.ports import FrameSource
 
-log = logging.getLogger("trofeo.probe")
+log = logging.getLogger("hardwarescreen.probe")
 
 
 class _Pattern(FrameSource):

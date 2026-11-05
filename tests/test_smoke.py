@@ -1,10 +1,10 @@
-"""Smoke tests for the trofeo core (no USB/device required)."""
+"""Smoke tests for the hardwarescreen core (no USB/device required)."""
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
-from trofeo import sensors
-from trofeo.protocol import CHUNK, build_frame
-from trofeo.render import quantize
+from hardwarescreen import sensors
+from hardwarescreen.protocol import CHUNK, build_frame
+from hardwarescreen.render import quantize
 
 
 def test_quantize_rounds_jitter():

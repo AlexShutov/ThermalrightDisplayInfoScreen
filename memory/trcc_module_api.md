@@ -20,4 +20,4 @@ Module must declare needed capabilities in `module.json`, else e.g.
 
 ## Our stub module (reference)
 `dev/trcc-module-stub/stub/` — key `stub`, min_trcc `9.12.0`, `default_on false`, installed + ON,
-verified called (`TROFEO_STUB: enabled host=ModuleScope`). GPL-3.0-only (imports trcc internals).
+verified called (`HARDWARESCREEN_STUB: enabled host=ModuleScope`). GPL-3.0-only (imports trcc internals).

@@ -20,11 +20,11 @@ class StubModule(BaseModule, key="stub"):
     default_on = False
 
     def _enable(self, host):
-        print(f"TROFEO_STUB: enabled host={type(host).__name__}", flush=True)
+        print(f"HARDWARESCREEN_STUB: enabled host={type(host).__name__}", flush=True)
         try:
-            print(f"TROFEO_STUB: panels={host.panels.attached()}", flush=True)
+            print(f"HARDWARESCREEN_STUB: panels={host.panels.attached()}", flush=True)
         except Exception as e:  # keep the stub robust
-            print(f"TROFEO_STUB: panels query failed: {e}", flush=True)
+            print(f"HARDWARESCREEN_STUB: panels query failed: {e}", flush=True)
 
     def _disable(self, host):
-        print("TROFEO_STUB: disabled", flush=True)
+        print("HARDWARESCREEN_STUB: disabled", flush=True)

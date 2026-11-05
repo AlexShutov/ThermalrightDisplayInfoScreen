@@ -8,7 +8,7 @@ navigate, Enter/Space like, Esc quits.  Navigation loads the theme onto the LCD
 panel via ``trcc theme cloud-load`` and persists the position; a like is written
 atomically to ``favorites.json``.
 
-Dev/review tool (MIT) -- not part of the shipped ``src/trofeo`` package.
+Dev/review tool (MIT) -- not part of the shipped ``src/hardwarescreen`` package.
 """
 
 # SPDX-License-Identifier: MIT

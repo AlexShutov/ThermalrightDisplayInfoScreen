@@ -20,7 +20,7 @@ import usb.core
 
 from . import PID, VID
 
-LOG = logging.getLogger("trofeo.supervise")
+LOG = logging.getLogger("hardwarescreen.supervise")
 
 POLL_S = 1.0
 STOP_TIMEOUT_S = 5
@@ -59,7 +59,7 @@ class Engine:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="trofeo supervise")
+    ap = argparse.ArgumentParser(prog="hardwarescreen supervise")
     ap.add_argument("--cmd", nargs="+", required=True,
                     help="engine command to run (e.g. 'trcc display serve')")
     ap.add_argument("--poll", type=float, default=POLL_S)

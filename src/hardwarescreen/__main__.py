@@ -1,4 +1,4 @@
-"""CLI entry point: `trofeo run` (reactive renderer) / `trofeo supervise`."""
+"""CLI entry point: `hardwarescreen run` / `hardwarescreen supervise`."""
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ _CMDS = {"run", "supervise", "preview"}
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("--version", "-V"):
-        print(f"trofeo {__version__}")
+        print(f"hardwarescreen {__version__}")
         return 0
     cmd = argv[0]
     rest = argv[1:]

@@ -23,24 +23,24 @@ pip install -e .        # or: pip install .
 ## Run
 
 ```bash
-trofeo run                      # reactive renderer + keepalive + reconnect
-trofeo run --config config.yaml # explicit config
-trofeo --version
+hardwarescreen run                      # reactive renderer + keepalive + reconnect
+hardwarescreen run --config config.yaml # explicit config
+hardwarescreen --version
 ```
 
 Wrap an external engine (ready made Control Center, GPL-3.0, optional):
 
 ```bash
 pip install .[trcc]             # optional: trcc-linux
-trofeo supervise --cmd trcc daemon   # persistent engine (owns USB, renders + keepalive)
+hardwarescreen supervise --cmd trcc daemon   # persistent engine (owns USB, renders + keepalive)
 ```
 
 ## Deploy on Linux (Raspberry Pi / Orange Pi)
 
-- Copy `deploy/99-trofeo-lcd.rules` to `/etc/udev/rules.d/` and reload udev.
-- Copy `deploy/trofeo-supervisor.service` to `~/.config/systemd/user/` (adjust
+- Copy `deploy/99-hardwarescreen-lcd.rules` to `/etc/udev/rules.d/` and reload udev.
+- Copy `deploy/hardwarescreen-supervisor.service` to `~/.config/systemd/user/` (adjust
   `ExecStart` paths to your venv/project), then:
-  `systemctl --user enable --now trofeo-supervisor`.
+  `systemctl --user enable --now hardwarescreen-supervisor`.
 
 ## Hardware facts (see `AGENTS.md`)
 
@@ -60,7 +60,7 @@ python tools/probe_fps.py      # measure FPS ceiling
 
 - **This package** is **MIT**.
 - **`trcc-linux`** is **GPL-3.0** and is used **only as an external engine** —
-  an installed dependency / subprocess launched by `trofeo supervise`. Its code
+  an installed dependency / subprocess launched by `hardwarescreen supervise`. Its code
   is never copied into these sources, so this package stays MIT.
 
 Optional trcc integration (external, GPL-3.0):

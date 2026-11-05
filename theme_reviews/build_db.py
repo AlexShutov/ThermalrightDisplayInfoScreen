@@ -15,7 +15,7 @@ Usage::
     build_db.py --enqueue a001     # bump a theme to the front of the queue
     build_db.py --status           # print a summary
 
-Dev/review tool (MIT) -- not part of the shipped ``src/trofeo`` package.
+Dev/review tool (MIT) -- not part of the shipped ``src/hardwarescreen`` package.
 """
 
 # SPDX-License-Identifier: MIT
@@ -53,7 +53,7 @@ FLASH_DELTA = 60.0     # AND peak-minus-median at/above this counts as a flash
 FLASH_MIN = 150.0      # a flash must also reach at least this luma
 SAMPLE_EVERY = 5       # analyse every Nth frame
 MAX_BYTES = 64 * 1024 * 1024
-UA = "trofeo-theme-db/1.0"
+UA = "hardwarescreen-theme-db/1.0"
 _HTTP_TIMEOUT = 30
 
 _YAVG_RE = re.compile(r"lavfi\.signalstats\.YAVG=([0-9eE.+-]+)")

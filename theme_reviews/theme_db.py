@@ -7,7 +7,7 @@ This module is the read/queue layer the GUI uses: it classifies a theme, knows
 whether its media is already on disk, and can bump a theme to the front of the
 downloader queue.  Pure stdlib (``sqlite3``) so it stays portable.
 
-Dev/review tool (MIT) -- not part of the shipped ``src/trofeo`` package.
+Dev/review tool (MIT) -- not part of the shipped ``src/hardwarescreen`` package.
 """
 
 # SPDX-License-Identifier: MIT

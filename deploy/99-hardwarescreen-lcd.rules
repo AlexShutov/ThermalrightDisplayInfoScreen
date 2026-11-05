@@ -1,4 +1,4 @@
 # Thermalright Trofeo Vision 11.3 LCD (0416:5408)
 # Start the reconnect supervisor as soon as the device appears.
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0416", ATTR{idProduct}=="5408", \
-  TAG+="systemd", ENV{SYSTEMD_WANTS}="trofeo-supervisor.service"
+  TAG+="systemd", ENV{SYSTEMD_WANTS}="hardwarescreen-supervisor.service"

@@ -11,10 +11,10 @@ import os
 
 from PIL import Image
 
+from hardwarescreen.config import Config
+from hardwarescreen.protocol import MAX_FRAME_BYTES
+from hardwarescreen.render import Renderer, quantize, should_render
 from tests.fakes import FakeBackground, FakeSource, FakeStore, MockPanel
-from trofeo.config import Config
-from trofeo.protocol import MAX_FRAME_BYTES
-from trofeo.render import Renderer, quantize, should_render
 
 KEEPALIVE_S = 2.0
 ACTIVE_FPS = 15.0
