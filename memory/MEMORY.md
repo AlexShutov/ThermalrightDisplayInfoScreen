@@ -25,6 +25,9 @@ Auto-loaded into context. Keep the index <= ~200 lines; detail lives in the link
   self-guarding, safe file/JSON helpers, FastAPI/pydantic patterns, single-broadcast merge, small utils.
   FOLLOW THESE during development.
 - **`conventions.md`** — code/style, licenses (MIT ours / GPL-3.0 external), git/commit policy, repo.
+- **`conventions.md`** also records the `ActivityProgressRingsQt` submodule (Activity Rings
+  extracted to its own public repo, `github.com/AlexShutov/ActivityProgressRingsQt`, wired here as
+  a git submodule at `ActivityProgressRingsQt/`; package `activityrings`, MIT, PySide6 optional).
 - **`hardware_verification.md`** — on-screen check-list (only with the real panel + trcc daemon):
   composite-over-theme, attach race, 450 KB budget, FPS, day/night without restart, USB contention.
   Each phase is otherwise proven headless via `tools/quality_check.sh`.

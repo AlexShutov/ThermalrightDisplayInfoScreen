@@ -31,6 +31,11 @@ currently attached, so all available work is done; the remaining checks need the
 - **`src/manager/trcc.py`** optional `TrccThemeSwitcher` (injectable subprocess runner, literal
   `{theme}` replace); `config.theme_cmd`; wired in `create_app` with a live `state.themes` resolver.
 - `src/hardwarescreen/imageutil.py` (`encode_within_budget`), `render.py` refactor onto it.
+- **Extracted the Activity Rings into a standalone repo** `github.com/AlexShutov/ActivityProgressRingsQt`
+  (public) and wired it here as a **git submodule** at `ActivityProgressRingsQt/` (commit `fc36d49`).
+  Removed from this repo: `src/hardwarescreen/rings*.py`, `tests/test_rings_focus.py`,
+  `tools/*rings*preview.py`, `docs/rings*`, `activity_rings_compare.pdf`. Submodule has its own
+  per-task history (Pillow renderer → focus timeline + tests → Qt focus preview + assets).
 - Bug-Analysis Gate run twice; found + fixed HIGH/MED/MED/LOW/LOW (GPL keep-newest, tiny-canvas crash,
   stale-vs-live resolver, malformed seq, brace placeholder). Re-verify: READY.
 

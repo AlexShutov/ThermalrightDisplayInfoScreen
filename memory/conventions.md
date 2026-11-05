@@ -23,3 +23,12 @@
 - Commits: `47ba71c` (trcc engine + daemon), `322765b` (full-res 1920x440 render),
   `b9f3a38` (licenses README), `fd84893` (stub module), `3c24f89` (theme catalog PDF).
 - `trcc_themes_catalog.pdf` — WB-style grid of all 210 themes with previews (14 pages), committed.
+- **`ActivityProgressRingsQt`** (public repo, `github.com/AlexShutov/ActivityProgressRingsQt`) —
+  the Apple-style Activity Rings work moved OUT of `hardwarescreen` into a standalone repo and
+  re-wired as a **git submodule** here. Its history (one commit
+  per task): Pillow renderer + previews → pure focus-shift timeline model + tests → Qt focus
+  preview + assets. Package `activityrings` (`src/activityrings/`), MIT; PySide6 is an optional
+  `qt` extra for the preview. In the main repo the submodule lives at `ActivityProgressRingsQt/`;
+  the former `src/hardwarescreen/rings*.py`, `tests/test_rings_focus.py`,
+  `tools/*rings*preview.py`, and `docs/rings*`/`activity_rings_compare.pdf` were removed.
+  Submodule update: `git submodule update --init --recursive`.
