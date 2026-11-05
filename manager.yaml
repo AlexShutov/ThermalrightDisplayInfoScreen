@@ -1,0 +1,31 @@
+# Theme Manager configuration (YAML-first). Options must be added to
+# src/manager/config.py before use.
+# Bind locally by default; LAN producers set host + auth_token.
+host: 127.0.0.1
+port: 8123
+# Atomic bridge state file (temp + os.replace; monotonic seq). The Qt adapter
+# polls this file and reacts to seq growth.
+state_file: manager_state.json
+# Reject request bodies larger than this (HTTP 413 instead of OOM on small RAM).
+body_limit_bytes: 1000000
+# Timeout for the day/night trcc trigger (a hung daemon must not freeze the worker).
+switch_timeout_s: 10.0
+default_mode: day
+themes:
+  day: d037
+  night: d029
+adapter:
+  day:
+    background: "#f2f3f7"
+    panel: "#ffffff"
+    accent: "#2e6fdb"
+    text: "#1a1a1e"
+    muted: "#6b7280"
+  night:
+    background: "#111318"
+    panel: "#1b1e27"
+    accent: "#4f9cf9"
+    text: "#eef2f8"
+    muted: "#8a93a6"
+# Optional: set to a token to require `Authorization: Bearer <token>` (LAN producers).
+auth_token:
