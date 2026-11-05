@@ -84,6 +84,7 @@ APP_SS = """
 QLabel#title { color: #e8ecf4; font-size: 20px; font-weight: 700; }
 QLabel#number { color: #97a0b2; font-size: 14px; }
 QLabel#status { color: #8a93a6; font-size: 12px; }
+QLabel#bri_status { color: #97a0b2; font-size: 13px; font-weight: 600; }
 QGroupBox {
     border: 1px solid white;
     border-radius: 8px;
@@ -451,6 +452,19 @@ class PreviewPane(QWidget):
         if self._tid:
             self.thumb.set_theme(self._tid)
 
+    def pause_video(self) -> None:
+        """Pause the preview clip (e.g. when the host locks or sleeps).
+
+        macOS invalidates the VideoToolbox/GPU session on a display sleep; a
+        live QMediaPlayer can then hard-crash.  Pausing on the inactive/suspended
+        application state quiesces the decode session; on wake the app rebuilds
+        it from scratch via ``set_theme`` (stop + setSource + play) rather than
+        resuming, so the stale session is never reused.
+        """
+        if self._media is not None:
+            with contextlib.suppress(Exception):
+                self._media.pause()
+
     def _resolve_video(self, tid: str, brightness: int = 100) -> str | None:
         if not tid:
             return None
@@ -602,8 +616,38 @@ class PreviewApp(QWidget):
         self._bake_seq = 0
         self._bake_thread: _BakeWorker | None = None
         self._brightness_cache: dict[tuple[str, int], str] = {}
+        self._brightness_debounce = QTimer(self)
+        self._brightness_debounce.setSingleShot(True)
+        self._brightness_debounce.timeout.connect(self._on_brightness_debounce)
+        self._brightness_debounce_ms = 500
+        self._pending_brightness: tuple[str, int] | None = None
         self._build_ui()
         self._refresh(load_panel=False)
+        self._was_inactive = False
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_app_state)
+
+    def _on_app_state(self, state) -> None:  # noqa: N802
+        """Pause on lock/sleep; fully rebuild the playback + panel on wake.
+
+        A macOS lock or display sleep invalidates the VideoToolbox/GPU session
+        and drops the USB panel, so a live QMediaPlayer can hard-crash on wake if
+        we merely *resume* it.  Pausing the decode session while we are away, and
+        on wake rebuilding it from scratch -- `_refresh` -> `set_theme` does a
+        stop + setSource + play (not a resume) -- + re-loading the current theme
+        keeps both the GUI and the panel alive across lock/sleep/wake.
+        """
+        active = state == Qt.ApplicationState.ApplicationActive
+        if not active:
+            self._was_inactive = True
+            if self.preview is not None:
+                self.preview.pause_video()
+            return
+        if self._was_inactive:
+            self._was_inactive = False
+            if self.themes and 0 <= self.index < len(self.themes):
+                self._refresh(load_panel=True)
 
     def _build_ui(self) -> None:
         self.setObjectName("app")
@@ -640,16 +684,19 @@ class PreviewApp(QWidget):
         self._slider.sliderReleased.connect(self._on_slider_released)
         pager.addWidget(self._slider, 1)
         v.addLayout(pager)
-        bri = QHBoxLayout()
-        bri_label = QLabel("Яркость %")
+        bri_group = QGroupBox("Яркость")
+        bri = QVBoxLayout(bri_group)
         self._brightness_slider = QSlider(Qt.Orientation.Horizontal)
-        self._brightness_slider.setRange(0, 150)
+        self._brightness_slider.setRange(0, 100)
         self._brightness_slider.setValue(100)
-        self._brightness_slider.setToolTip("Brightness")
+        self._brightness_slider.setToolTip("Яркость (%)")
         self._brightness_slider.valueChanged.connect(self._on_brightness_changed)
-        bri.addWidget(bri_label)
-        bri.addWidget(self._brightness_slider, 1)
-        v.addLayout(bri)
+        bri.addWidget(self._brightness_slider)
+        self._brightness_status = QLabel("не менялась")
+        self._brightness_status.setObjectName("bri_status")
+        self._brightness_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bri.addWidget(self._brightness_status)
+        v.addWidget(bri_group)
         self.status = QLabel()
         self.status.setObjectName("status")
         v.addWidget(self.status)
@@ -845,6 +892,7 @@ class PreviewApp(QWidget):
     def _on_slider_moved(self, val: int) -> None:
         i = val - 1
         if 0 <= i < len(self.themes):
+            self._flush_pending_brightness()
             self.index = i
             self._preview_index(i)
 
@@ -910,6 +958,7 @@ class PreviewApp(QWidget):
     def closeEvent(self, event) -> None:  # noqa: N802
         self._loader.stop()
         self._loader.wait(3000)
+        self._teardown_brightness()
         super().closeEvent(event)
 
     def _update_mark(self, tid: str) -> None:
@@ -927,14 +976,61 @@ class PreviewApp(QWidget):
         self.status.setText(text)
 
     def _on_brightness_changed(self, pct: int) -> None:
+        """Live overlay only; debounce the expensive panel/bake work.
+
+        Called on every slider tick, so it must stay cheap (no subprocess, no
+        DB write, no ffmpeg).  Only the in-window overlay updates here; the
+        actual panel dim + bake commit runs ``_brightness_debounce`` later.
+        """
         if not self.themes:
             return
         tid = self.themes[self.index][0]
+        pct = max(0, min(100, int(pct)))
+        self._pending_brightness = (tid, pct)
+        self.preview.set_brightness(pct)
+        self._update_brightness_status(pct)
+        self._brightness_debounce.start(self._brightness_debounce_ms)
+
+    def _update_brightness_status(self, pct: int) -> None:
+        """Show whether a theme's brightness was left at default, else by how much."""
+        pct = max(0, min(100, int(pct)))
+        if pct >= 100:
+            self._brightness_status.setText("не менялась")
+        else:
+            self._brightness_status.setText(f"{pct}%")
+
+    def _on_brightness_debounce(self) -> None:
+        """Commit brightness once the slider has been idle for ~500 ms.
+
+        The heavy work (persist + native panel dim + ffmpeg bake) fires only
+        after the user stops dragging, so a fast scroll never recomputes every
+        in-between position.  It commits to the theme that was being adjusted
+        when the slider moved (``_pending_brightness``), not the current one, so
+        a drag is never lost if the user pages on to the next theme mid-debounce.
+        """
+        pending = self._pending_brightness
+        self._pending_brightness = None
+        if pending is None:
+            return
+        tid, pct = pending
+        pct = max(0, min(100, int(pct)))
         theme_db.set_brightness(tid, pct)
+        if pct == 100:
+            self._restore_normal(tid)
+            return
         with contextlib.suppress(Exception):
             set_dev_brightness(self.device, pct)
-        self.preview.set_brightness(pct)
         self._schedule_bake(tid, pct)
+
+    def _flush_pending_brightness(self) -> None:
+        """Persist a still-armed drag so it is not lost on navigation/exit."""
+        pending = self._pending_brightness
+        self._pending_brightness = None
+        if pending is None:
+            return
+        tid, pct = pending
+        pct = max(0, min(100, int(pct)))
+        theme_db.set_brightness(tid, pct)
 
     def _src_video(self, tid: str) -> str | None:
         if not tid:
@@ -1030,7 +1126,10 @@ class PreviewApp(QWidget):
 
     def _apply_baked(self, tid: str, pct: int, path: str) -> None:
         try:
-            load_local_video(self.device, path)
+            if not load_local_video(self.device, path):
+                # The baked clip could not be played; keep the native dim rather
+                # than snapping back to 100 and showing the bright original.
+                return
             self.preview.set_theme(tid, brightness=pct)
             set_dev_brightness(self.device, 100)
             self.preview.set_brightness(100)
@@ -1042,6 +1141,9 @@ class PreviewApp(QWidget):
             self._bake_timer.stop()
             self._bake_target = None
             self._bake_seq += 1
+            if self._brightness_debounce.isActive():
+                self._brightness_debounce.stop()
+                self._flush_pending_brightness()
             set_dev_brightness(self.device, 100)
             self.preview.set_brightness(100)
         except Exception:
