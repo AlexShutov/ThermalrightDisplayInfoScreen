@@ -34,3 +34,7 @@ def main(argv=None) -> int:
     app = create_app(cfg, store)
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level=args.log.lower())
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

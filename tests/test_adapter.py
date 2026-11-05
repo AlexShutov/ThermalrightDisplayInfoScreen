@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
-from hardwarescreen.adapter.dashboard import compose_dashboard, gauge_layout
+from hardwarescreen.adapter.dashboard import compose_dashboard, gauge_layout, hex_to_rgb
 from hardwarescreen.adapter.driver import AdapterDriver, bridge_has_data
 from hardwarescreen.adapter.poller import BridgePoller
 from hardwarescreen.adapter.source import DashboardSource
@@ -68,6 +68,70 @@ def test_poller_exposes_last_newest():
     assert p.last["mode"] == "night"
 
 
+# -- palette / edge cases ----------------------------------------------------
+def test_hex_to_rgb_invalid_inputs_return_default():
+    for bad in ("", "#12345", "zzzzzz", "#12345g", "abc", None):
+        assert hex_to_rgb(bad) == (80, 80, 90)
+
+
+def test_hex_to_rgb_valid_forms():
+    assert hex_to_rgb("#ff0000") == (255, 0, 0)
+    assert hex_to_rgb("ff0000") == (255, 0, 0)
+    assert hex_to_rgb("#00ff00") == (0, 255, 0)
+
+
+def test_labelled_value_denominator_zero_does_not_raise():
+    c, specs = gauge_layout(
+        [{"id": "g", "label": "G", "unit": "%", "min": 50, "max": 50}],
+        {"g": 50.0},
+        {},
+        SIZE,
+    )
+    assert specs[0].pct == 0.0
+
+
+def test_gauge_layout_value_below_min_clamps_to_zero():
+    c, specs = gauge_layout(
+        [{"id": "t", "label": "TEMP", "unit": "C", "min": 20, "max": 40}],
+        {"t": 10.0},
+        {},
+        SIZE,
+    )
+    assert specs[0].pct == 0.0
+    assert specs[0].text == "10C"
+
+
+def test_gauge_layout_value_above_max_clamps_to_100():
+    c, specs = gauge_layout(
+        [{"id": "t", "label": "TEMP", "unit": "C", "min": 20, "max": 40}],
+        {"t": 99.0},
+        {},
+        SIZE,
+    )
+    assert specs[0].pct == 100.0
+
+
+def test_gauge_layout_non_numeric_value_renders_na():
+    c, specs = gauge_layout(
+        [{"id": "cpu", "label": "CPU", "unit": "%", "min": 0, "max": 100}],
+        {"cpu": "abc"},
+        {},
+        SIZE,
+    )
+    assert specs[0].text == "n/a"
+    assert specs[0].pct == 0.0
+
+
+def test_compose_dashboard_non_numeric_value_renders():
+    img = compose_dashboard(
+        [{"id": "cpu", "label": "CPU", "unit": "%", "min": 0, "max": 100}],
+        {"cpu": "abc"},
+        {},
+        SIZE,
+    )
+    assert img.size == SIZE
+
+
 # -- layout / compose --------------------------------------------------------
 def test_gauge_layout_pct_and_text():
     c, specs = gauge_layout(
@@ -118,6 +182,14 @@ def test_compose_dashboard_many_gauges_clamps_zero_height():
              for i in range(30)]
     img = compose_dashboard(setup, {g["id"]: 50.0 for g in setup}, {}, (256, 220))
     assert img.size == (256, 220)
+
+
+def test_compose_dashboard_30_gauges_full_canvas_invariant():
+    setup = [{"id": f"g{i}", "label": f"G{i}", "unit": "%", "min": 0, "max": 100}
+             for i in range(30)]
+    img = compose_dashboard(setup, {g["id"]: 50.0 for g in setup}, {}, (1920, 440))
+    assert img.size == (1920, 440)
+    assert len(img.tobytes()) == 1920 * 440 * 3
 
 
 # -- source ------------------------------------------------------------------

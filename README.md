@@ -35,6 +35,30 @@ pip install .[trcc]             # optional: trcc-linux
 hardwarescreen supervise --cmd trcc daemon   # persistent engine (owns USB, renders + keepalive)
 ```
 
+## Theme Manager (headless, no hardware)
+
+The manager is a local HTTP service that owns the display plane; producers POST
+JSON and the theme manager publishes an atomic bridge state that the Qt dashboard
+adapter (see `dev/`) reads to draw gauges over the theme. The whole flow below
+runs without a panel and without `trcc`.
+
+Install with the dev/quality tooling:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Run the manager and a stub data source (headless, no hardware):
+
+```bash
+hardwarescreen-manager --config manager.yaml   # port 8123, atomic bridge state file
+hardwarescreen-stubdata --config stubdata.yaml # feeds gauges + day/night switches
+```
+
+On the real device the trcc dashboard module is enabled on the panel — see
+`memory/hardware_verification.md` for the on-screen check-list and `memory/`
+for the manager/architecture notes.
+
 ## Deploy on Linux (Raspberry Pi / Orange Pi)
 
 - Copy `deploy/99-hardwarescreen-lcd.rules` to `/etc/udev/rules.d/` and reload udev.

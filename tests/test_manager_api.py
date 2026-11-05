@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from hardwarescreen.adapter.dashboard import compose_dashboard
 from manager.api import create_app
 from manager.config import Config
 from tests.fakes import FakeStore
+
+PALETTE_SIZE = (256, 220)
 
 
 def _client(cfg: Config | None = None, *, raise_on_switch: bool = False):
@@ -73,6 +76,27 @@ def test_settings_derives_active_palette_for_current_mode():
     assert r.status_code == 200
     assert r.json()["mode"] == "day"
     assert r.json()["palette"]["background"] == "#fff"
+
+
+def test_settings_palette_reaches_bridge_and_dashboard():
+    client, store, _ = _client()
+    client.post("/dashboard/setup", json={"gauges": [
+        {"id": "cpu", "label": "CPU", "unit": "%", "min": 0, "max": 100},
+    ]})
+    client.post("/dashboard/update", json={"values": {"cpu": 100}})
+    r = client.post("/settings", json={
+        "themes": {"day": "d037", "night": "d029"},
+        "adapter": {"day": {
+            "background": "#f2f3f7", "panel": "#ffffff",
+            "accent": "#ff0000", "text": "#1a1a1e", "muted": "#6b7280",
+        }},
+    })
+    assert r.status_code == 200
+    bridge = store.read()
+    assert bridge["palette"]["accent"] == "#ff0000"
+    assert set(bridge) >= {"mode", "active_theme", "palette", "setup", "values"}
+    img = compose_dashboard(bridge["setup"], bridge["values"], bridge["palette"], PALETTE_SIZE)
+    assert b"\xff\x00\x00" in img.tobytes()
 
 
 def test_theme_switches_mode_calls_switcher_and_updates_theme():
