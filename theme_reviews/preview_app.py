@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSlider,
+    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -101,10 +102,16 @@ QGroupBox::title {
 QRadioButton { color: white; }
 """
 
-DOCK_WIDTH = 240
-DOCK_COLS = 2
-TILE_W = 104
-TILE_H = 92
+DOCK_WIDTH = 380
+DOCK_COLS = 3
+TILE_W = 112
+TILE_H = 104
+
+# Index of the "Понравилось" (favorites) tab in the dock tab bar; the four
+# filter tabs (Все/Тёмная/Светлая/Со вспышками) occupy indices 0..3 and map
+# 1:1 onto the filter radio group.
+FAV_TAB = 4
+FILTER_TAB_KEYS = ("all", "dark", "light", "flash")
 
 
 def _row_matches(key: str, row: dict | None) -> bool:
@@ -187,7 +194,7 @@ class DockToggle(QPushButton):
         self.setFixedWidth(28)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setToolTip("Show/hide favorites")
+        self.setToolTip("Показать/скрыть панель")
         self._anim = QPropertyAnimation(self, b"arrow", self)
         self._anim.setDuration(180)
         self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
@@ -593,6 +600,8 @@ class PreviewApp(QWidget):
             self._all_themes = filter_panel_themes(self._all_themes, thumb_dir)
         self.themes = list(self._all_themes)
         self._filter = "all"
+        self._syncing = False
+        self._dock_tab = 0
         self.fav = set(load_favorites(FAVORITES))
         self._fav = list(self.fav)
         self.index = index_of(self.themes, load_state(), -1)
@@ -758,13 +767,12 @@ class PreviewApp(QWidget):
         self._dock_toggle.clicked.connect(self._toggle_dock)
         root.addWidget(self._dock_panel)
         root.addWidget(self._dock_toggle)
-        self.setMinimumSize(560, 480)
+        self.setMinimumSize(700, 500)
         self._refresh_dock()
 
     def _build_dock_panel(self) -> None:
         self._dock_open = False
         self._dock_anim: QPropertyAnimation | None = None
-        self._base_w: int | None = None
         self._dock_tiles: dict[str, FavoriteTile] = {}
         self._dock_panel = QWidget(self)
         self._dock_panel.setObjectName("dock")
@@ -773,15 +781,30 @@ class PreviewApp(QWidget):
             "border-radius: 8px; }"
             "QLabel#dock_header { color: #e8ecf4; font-weight: 700; font-size: 13px; "
             "padding-left: 2px; }"
+            "QTabBar::tab { background: #2a3040; color: #c3cbdb; padding: 5px 8px; "
+            "border: 1px solid #2a3040; border-top-left-radius: 6px; "
+            "border-top-right-radius: 6px; margin-right: 2px; }"
+            "QTabBar::tab:selected { background: #35d08a; color: #0b0f14; "
+            "font-weight: 700; }"
+            "QTabBar::scroll-button { background: transparent; }"
             "QScrollArea { background: transparent; border: none; }"
             "QScrollArea > QWidget > QWidget { background: transparent; }"
         )
         pl = QVBoxLayout(self._dock_panel)
         pl.setContentsMargins(8, 8, 8, 8)
         pl.setSpacing(6)
-        self._dock_header = QLabel("Favorites")
+        self._dock_header = QLabel("Все")
         self._dock_header.setObjectName("dock_header")
         pl.addWidget(self._dock_header)
+        self._tab_bar = QTabBar(self._dock_panel)
+        self._tab_bar.setObjectName("dock_tabs")
+        self._tab_bar.setExpanding(False)
+        self._tab_bar.setUsesScrollButtons(True)
+        for label in ("Все", "Тёмная", "Светлая", "Тёмная со вспышками", "Понравилось"):
+            self._tab_bar.addTab(label)
+        self._tab_bar.setCurrentIndex(self._dock_tab)
+        self._tab_bar.currentChanged.connect(self._on_dock_tab_changed)
+        pl.addWidget(self._tab_bar)
         self._favs_scroll = QScrollArea(self._dock_panel)
         self._favs_scroll.setObjectName("favs_scroll")
         self._favs_scroll.setWidgetResizable(True)
@@ -809,18 +832,29 @@ class PreviewApp(QWidget):
             self._dock_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
             self._dock_anim.valueChanged.connect(self._on_dock_anim)
         self._dock_anim.stop()
-        self._base_w = self.width() - self._dock_panel.maximumWidth()
         self._dock_anim.setStartValue(self._dock_panel.maximumWidth())
         self._dock_anim.setEndValue(target)
         self._dock_anim.start()
+        if self._dock_open:
+            self._refresh_dock()
 
     def _on_dock_anim(self, value: float) -> None:
-        if self._base_w is not None:
-            self.resize(int(self._base_w + value), self.height())
+        # Keep the main window size fixed; the panel's own width is driven by
+        # min==max so it "stretches" within the fixed window (the preview area
+        # compresses to make room) rather than growing the window.
+        v = int(value)
+        self._dock_panel.setMinimumWidth(v)
+        self._dock_panel.setMaximumWidth(v)
 
     def _refresh_dock(self) -> None:
+        self._dock_header.setText(self._tab_bar.tabText(self._dock_tab))
+        if not self._dock_open:
+            return
         current = self.themes[self.index][0] if self.themes else None
-        show = [tid for tid in self._fav if _row_matches(self._filter, self._meta.get(tid))]
+        if self._dock_tab == FAV_TAB:
+            show = [tid for tid in self._fav if tid in [t[0] for t in self._all_themes]]
+        else:
+            show = [t[0] for t in self.themes]
         for tid in show:
             if tid not in self._dock_tiles:
                 tile = FavoriteTile(tid, self.thumb_dir)
@@ -840,14 +874,20 @@ class PreviewApp(QWidget):
                 tile.hide()
 
     def _on_tile_clicked(self, tid: str) -> None:
-        for i, (t, _cat) in enumerate(self.themes):
-            if t == tid:
-                if i != self.index:
-                    self.index = i
-                    self._refresh()
-                else:
-                    self._refresh_dock()
-                return
+        widened = tid not in [t for t, _c in self.themes]
+        if widened:
+            self._select_filter(self._filter_for_tid(tid), load=False)
+        i = next((j for j, (t, _c) in enumerate(self.themes) if t == tid), -1)
+        if i < 0:
+            return
+        if widened or i != self.index:
+            # A widened filter may clamp self.index onto i, so the else branch
+            # would skip the panel load and leave the LCD on the old theme;
+            # always (re)load the clicked theme after a widening navigation.
+            self.index = i
+            self._refresh(load_panel=True)
+        else:
+            self._refresh_dock()
 
     def _refresh(self, load_panel: bool = True) -> None:
         self._teardown_brightness()
@@ -859,7 +899,7 @@ class PreviewApp(QWidget):
         if load_panel:
             self._load_panel(tid)
 
-    def _apply_filter(self) -> None:
+    def _apply_filter(self, load: bool = True) -> None:
         key = self._filter
         meta = self._meta
         self.themes = [t for t in self._all_themes if _row_matches(key, meta.get(t[0]))]
@@ -873,12 +913,53 @@ class PreviewApp(QWidget):
             self.index = len(self.themes) - 1
         self._slider.setRange(1, len(self.themes))
         self._slider.setValue(self.index + 1)
-        self._refresh(load_panel=True)
+        self._refresh(load_panel=load)
+
+    def _filter_radio(self, key: str) -> QRadioButton:
+        return {
+            "all": self.filter_all,
+            "dark": self.filter_dark,
+            "light": self.filter_light,
+            "flash": self.filter_flash,
+        }[key]
+
+    def _select_filter(self, key: str, load: bool = True) -> None:
+        """Switch the filter, keeping the dock tab bar + radio group in sync."""
+        self._filter = key
+        idx = FILTER_TAB_KEYS.index(key)
+        self._syncing = True
+        try:
+            self._filter_radio(key).setChecked(True)
+            self._dock_tab = idx
+            self._tab_bar.setCurrentIndex(idx)
+        finally:
+            self._syncing = False
+        self._apply_filter(load=load)
 
     def _on_filter_toggled(self, key: str, checked: bool) -> None:
-        if checked:
-            self._filter = key
-            self._apply_filter()
+        if checked and not self._syncing:
+            self._select_filter(key)
+
+    def _on_dock_tab_changed(self, idx: int) -> None:
+        if self._syncing:
+            return
+        if idx < len(FILTER_TAB_KEYS):
+            self._select_filter(FILTER_TAB_KEYS[idx])
+        elif idx == FAV_TAB:
+            self._dock_tab = FAV_TAB
+            self._refresh_dock()
+
+    def _filter_for_tid(self, tid: str) -> str:
+        row = self._meta.get(tid)
+        if row is None or row.get("is_dark") is None:
+            return "all"
+        dark = row["is_dark"] == 1
+        flash = row["has_flash"] == 1
+        if dark and flash:
+            return "flash"
+        if dark:
+            return "dark"
+        return "light"
 
     def _load_panel(self, tid: str) -> None:
         self._auto_timer.stop()
