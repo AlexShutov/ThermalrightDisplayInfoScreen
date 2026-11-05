@@ -41,6 +41,14 @@ _VENV_TRCC = os.path.join(HERE, "..", ".venv-trcc", "bin", "trcc")
 TRCC = os.environ.get("TRCC", _VENV_TRCC if os.path.exists(_VENV_TRCC) else "trcc")
 FFMPEG = os.environ.get("FFMPEG", "/opt/homebrew/bin/ffmpeg")
 
+# If the trcc daemon drops or the USB panel disconnects (e.g. machine lock or
+# sleep), a blocking subprocess would hang a QThread forever and Qt aborts when a
+# QThread object is destroyed while still running.  Every trcc/ffmpeg call is
+# therefore bounded so a hung device wedges a worker thread at most this long,
+# then the thread finishes and can be joined cleanly.  ``set_dev_brightness``
+# runs on the GUI thread, so it gets a shorter bound to avoid freezing the UI.
+_DEFAULT_TIMEOUT_S = 20.0
+
 _ID_RE = re.compile(r"^\s*([a-zA-Z]\d{3,4})\s+(.+?)\s*$")
 
 
@@ -125,6 +133,7 @@ def set_dev_brightness(device: str, pct: int) -> None:
         subprocess.run(
             [TRCC, "display", "set-brightness", device, str(pct)],
             capture_output=True, text=True, check=False,
+            timeout=8.0,
         )
 
 
@@ -143,7 +152,10 @@ def encode_brightness_video(src: str, dst: str, pct: int) -> bool:
             "-loglevel", "error", dst,
         ]
         try:
-            r = subprocess.run(args, capture_output=True, text=True, check=False)
+            r = subprocess.run(
+                args, capture_output=True, text=True, check=False,
+                timeout=_DEFAULT_TIMEOUT_S * 5,
+            )
         except Exception:
             r = None
         if r is not None and r.returncode == 0 and os.path.exists(dst):
@@ -159,6 +171,7 @@ def load_local_video(device: str, path: str) -> bool:
         r = subprocess.run(
             [TRCC, "display", "load-video", device, path],
             capture_output=True, text=True, check=False,
+            timeout=_DEFAULT_TIMEOUT_S,
         )
         return bool(r and r.returncode == 0)
     except Exception:
@@ -168,10 +181,14 @@ def load_local_video(device: str, path: str) -> bool:
 def load_theme(device: str, theme_id: str) -> bool:
     """Load/play a cloud theme; return True on success (one retry)."""
     for attempt in (1, 2):
-        r = subprocess.run(
-            [TRCC, "theme", "cloud-load", device, theme_id],
-            capture_output=True, text=True, check=False,
-        )
+        try:
+            r = subprocess.run(
+                [TRCC, "theme", "cloud-load", device, theme_id],
+                capture_output=True, text=True, check=False,
+                timeout=_DEFAULT_TIMEOUT_S,
+            )
+        except Exception:
+            return False
         if r.returncode == 0 and "playing" in r.stdout:
             return True
         if attempt == 1 and "playback loaded" not in r.stdout:
