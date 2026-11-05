@@ -24,7 +24,7 @@ dependencies = [
 # external engine. Not required for the portable core path (our own LY transport).
 trcc = ["trcc-linux>=9.12"]
 # Dev / quality harness (lint, type-check, tests). Not required to run the app.
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.10"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.10", "httpx2>=2.16"]
 
 [project.scripts]
 hardwarescreen = "hardwarescreen.__main__:main"

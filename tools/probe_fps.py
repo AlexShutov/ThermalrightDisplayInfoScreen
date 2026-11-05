@@ -59,6 +59,9 @@ def jpeg(size, quality):
 
 def main():
     dev = usb.core.find(idVendor=VID, idProduct=PID)
+    if dev is None:
+        print(f"Device {VID:04x}:{PID:04x} not found")
+        return 1
     dev.set_configuration()
     assert handshake(dev), "handshake failed"
 
@@ -92,4 +95,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

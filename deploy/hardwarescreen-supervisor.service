@@ -8,7 +8,7 @@ Type=simple
 # reconnect itself; Restart only kicks in if the process crashes.
 # Alternative: wrap trcc-linux as the engine (verified: connects as 11.3/1920x440/model 69):
 #   ExecStart=%h/.venv/bin/hardwarescreen supervise --cmd %h/.venv-trcc/bin/trcc daemon
-ExecStart=%h/.venv-trcc/bin/hardwarescreen run --config %h/ThermaltakeDisplay/config.yaml
+ExecStart=%h/.venv-trcc/bin/hardwarescreen run --config %h/hardwarescreen/config.yaml
 Restart=on-failure
 RestartSec=2
 
