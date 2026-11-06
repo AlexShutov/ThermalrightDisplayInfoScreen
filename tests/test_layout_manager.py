@@ -1,62 +1,111 @@
 # SPDX-License-Identifier: MIT
-from hardwarescreen.adapter.layout import DashboardLayoutManager
+from hardwarescreen.adapter.layout import SelectionLayoutManager, StaticLayoutManager
 
-# Defaults mirror the 1920x440 panel: ~0.5 cm top/bottom margin (~34 px at
-# ~68 px/cm) and a 48 px side padding.
+# Defaults mirror the 1920x440 panel (~2 mm edge margin ≈ 14 px at ~68 px/cm).
 W, H = 1920, 440
+EDGE = 14.0  # SelectionLayoutManager()._edge_margin (2 mm)
+SCALE = 1.22
 
 
-def test_measure_fills_height_within_margins():
-    lm = DashboardLayoutManager()
+def _gap(lm, n=6):
+    return lm.gap_for(H, n)
+
+
+def _base(lm, n=6):
+    gap = _gap(lm, n)
+    return (H - 2.0 * EDGE - gap * (n - 1)) / (n + SCALE - 1.0)
+
+
+# -- StaticLayoutManager -----------------------------------------------------
+def test_static_equal_heights_and_within_margins():
+    lm = StaticLayoutManager()
     r = lm.measure(W, H, 6)
     assert len(r) == 6
-    assert r.bar_width == W - 2 * lm.padding_x
+    heights = [g.height for g in r.geometry]
+    assert max(heights) - min(heights) < 1e-6  # equal
     last = r[5]
-    # The stack must fill the available height exactly (leave the bottom margin).
-    assert abs((last.y + last.height) - (H - lm.padding_bottom)) < 1e-6
+    assert abs((last.y + last.height) - (H - EDGE)) < 1e-6
     for geo in r.geometry:
         assert geo.x >= 0 and geo.y >= 0
         assert geo.x + geo.width <= W + 1e-6
         assert geo.y + geo.height <= H + 1e-6
-    # All bars share one width (the layout is static).
-    assert all(abs(g.width - r.bar_width) < 1e-6 for g in r.geometry)
 
 
-def test_measure_respects_top_margin():
-    lm = DashboardLayoutManager()
-    r = lm.measure(W, H, 6)
-    assert r[0].y == lm.padding_top
+def test_static_ignores_focus():
+    lm = StaticLayoutManager()
+    a = lm.measure(W, H, 6, focus=[1, 0, 0, 0, 0, 0])
+    b = lm.measure(W, H, 6, focus=None)
+    assert [g for g in a.geometry] == [g for g in b.geometry]
 
 
-def test_measure_empty_count():
-    lm = DashboardLayoutManager()
+# -- SelectionLayoutManager --------------------------------------------------
+def test_selection_grows_focused_bar_without_shrinking_others():
+    lm = SelectionLayoutManager()
+    base = _base(lm)
+    none = lm.measure(W, H, 6, focus=[0.0] * 6)
+    assert abs(none[0].height - base) < 1e-6
+    r = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    assert abs(r[0].height - base * SCALE) < 1e-6   # focused grows
+    for i in range(1, 6):
+        assert abs(r[i].height - base) < 1e-6       # neighbours keep size
+    assert abs(none[0].height - r[0].height) > 1e-6  # it grew vs the idle state
+
+
+def test_selection_top_selected_keeps_2mm():
+    lm = SelectionLayoutManager()
+    r = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    assert abs(r[0].y - EDGE) < 0.6  # ~2 mm from the top edge
+    assert r[0].y >= 0
+
+
+def test_selection_bottom_selected_keeps_2mm():
+    lm = SelectionLayoutManager()
+    r = lm.measure(W, H, 6, focus=[0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+    assert abs((H - (r[5].y + r[5].height)) - EDGE) < 0.6
+    assert r[5].y + r[5].height <= H
+
+
+def test_selection_no_overflow_and_stable_positions():
+    lm = SelectionLayoutManager()
+    r = lm.measure(W, H, 6, focus=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    for geo in r.geometry:
+        assert geo.x >= 0 and geo.y >= 0
+        assert geo.x + geo.width <= W + 1e-6
+        assert geo.y + geo.height <= H + 1e-6
+    # centre-x / width are stable; only the focused bar's height changes.
+    allc = lm.measure(W, H, 6, focus=[0.5] * 6)
+    r2 = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    for i in range(6):
+        assert abs(r[i].x - r2[i].x) < 1e-6
+        assert abs(r[i].width - r2[i].width) < 1e-6
+
+
+def test_selection_static_positions_across_focus():
+    # The top edge of the frame stays fixed; only heights ease (no jitter).
+    lm = SelectionLayoutManager()
+    r1 = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    r2 = lm.measure(W, H, 6, focus=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    for i in range(6):
+        assert abs(r1[i].y + r1[i].height / 2.0 - (r2[i].y + r2[i].height / 2.0)) < 1e-6
+
+
+# -- dynamic gap -------------------------------------------------------------
+def test_gap_scales_down_with_more_indicators():
+    lm = SelectionLayoutManager()
+    assert lm.gap_for(H, 3) > lm.gap_for(H, 6)
+    assert lm.gap_for(H, 6) > lm.gap_for(H, 20)
+    assert lm.gap_for(H, 1) == 0.0
+
+
+def test_gap_bounded():
+    lm = SelectionLayoutManager()
+    assert lm.gap_for(H, 1) >= 0.0
+    assert lm.gap_for(H, 20) >= 0.0
+    assert lm.gap_for(H, 3) <= 28.0
+
+
+def test_empty_count():
+    lm = SelectionLayoutManager()
     r = lm.measure(W, H, 0)
     assert len(r) == 0
     assert r.bar_width == W - 2 * lm.padding_x
-
-
-def test_measure_no_overflow_many_gauges():
-    lm = DashboardLayoutManager()
-    r = lm.measure(W, H, 30)
-    last = r[29]
-    assert last.y + last.height <= H + 1e-6
-    assert all(g.y + g.height <= H + 1e-6 for g in r.geometry)
-
-
-def test_measure_collapses_gap_rather_than_overflow():
-    # A tall stack (many bars) compresses the gap to zero and still fits.
-    lm = DashboardLayoutManager()
-    r = lm.measure(W, H, 20)
-    first, last = r[0], r[19]
-    # With the gap collapsed, the span is height * n within the available strip.
-    assert abs(first.y + first.height - last.y - last.height) <= (
-        H - lm.padding_top - lm.padding_bottom) + 1e-6
-    assert last.y + last.height <= H + 1e-6
-
-
-def test_measure_layout_is_static_regardless_of_focus():
-    # The layout API has no focus input: geometry is identical for the same count.
-    lm = DashboardLayoutManager()
-    a = lm.measure(W, H, 6)
-    b = lm.measure(W, H, 6)
-    assert [g for g in a.geometry] == [g for g in b.geometry]

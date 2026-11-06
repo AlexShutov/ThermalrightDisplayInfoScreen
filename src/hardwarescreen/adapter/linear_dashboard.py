@@ -4,13 +4,13 @@ Builds a vertical stack of full-width horizontal bars from bridge gauge
 ``setup``/``values``/``palette`` and renders an offscreen frame as raw RGB bytes, then
 paints each gauge's ``label``/``value`` text over it.
 
-Bar geometry (size + position) is delegated to a ``DashboardLayoutManager`` — like
-Android's ``LinearLayoutManager``, a separate object measures the items inside the
-panel so the renderer only draws at the returned rects.  The layout is static: the
-focus (selection) highlights the current bar with a green glowing outline plus a
-bounded under-glow, but **never resizes** any bar — so selecting one item neither
-shrinks its neighbours nor overflows the panel.  Bars fill the container height minus
-a small top/bottom margin (~0.5 cm on the 1920x440 panel).
+Bar geometry (size + position) is delegated to a ``BaseLayoutManager`` — like Android's
+layout manager, a separate object measures the items inside the panel so the renderer
+only draws at the returned rects.  The selection layout (``is_selection_enabled``)
+grows the focused bar in thickness while the others keep their size, sizing the stack
+so it never overflows and an extreme bar keeps ~2 mm to the edge; a static layout
+(``is_selection_enabled=False``) draws equal-height bars.  The highlight (green
+outline + bounded under-glow) wraps the ACTIVE (filled) part of the bar only.
 
 Both the selection (focus) and the value (progress) transitions are eased over time.
 Rendering paints the bars directly into a standalone ``QImage`` with a ``QPainter`` —
@@ -29,7 +29,7 @@ from math import exp
 from PIL import Image
 
 from .dashboard import DEFAULT_SIZE, _palette, hex_to_rgb
-from .layout import DashboardLayoutManager
+from .layout import BaseLayoutManager, SelectionLayoutManager
 
 _LF = None
 
@@ -74,7 +74,7 @@ class LinearDashboardRenderer:
         focus_cycle_s: float = 2.0,
         focus_transition_s: float = 0.6,
         value_tween_s: float = 0.6,
-        layout: DashboardLayoutManager | None = None,
+        layout: BaseLayoutManager | None = None,
     ) -> None:
         self._ease = _ensure_qt()
         self._size: tuple[int, int] = (int(size[0]), int(size[1]))
@@ -83,7 +83,7 @@ class LinearDashboardRenderer:
         self._cycle = focus_cycle_s
         self._ftrans = focus_transition_s
         self._vtween = value_tween_s
-        self._layout = layout if layout is not None else DashboardLayoutManager()
+        self._layout = layout if layout is not None else SelectionLayoutManager()
         self._ids: list[str] = []
         self._anim_t = 0.0
         self._anim_step = 1.0 / max(1.0, fps)
@@ -153,7 +153,14 @@ class LinearDashboardRenderer:
             self._last_time = {}
 
         n = len(specs)
-        layout = self._layout.measure(self._size[0], self._size[1], n)
+        focus = [self._focus_factor(t, i, n) for i in range(n)]
+        # The selection layout grows the focused bar; a static layout ignores this.
+        layout = self._layout.measure(
+            self._size[0],
+            self._size[1],
+            n,
+            focus if self._layout.is_selection_enabled else None,
+        )
         progress: list[float] = []
         for i, spec in enumerate(specs):
             progress.append(self._eased_progress(i, spec["pct"] / 100.0, now))
@@ -222,18 +229,20 @@ class LinearDashboardRenderer:
         fill = QRectF(left, top, length * max(0.0, min(fr, 1.0)), t)
         focus = f > 0.0
 
-        # Soft bounded under-glow beneath the bar: accent colour when idle,
-        # green when selected (replaces a black drop shadow, invisible on dark).
-        glow_color = focus_color if focus else (color.red(), color.green(), color.blue())
-        self._under_glow(
-            p,
-            track,
-            glow_color,
-            t,
-            f if focus else 0.45,
-            bloom_px=22.0 if focus else 12.0,
-            alpha_base=52 if focus else 34,
-        )
+        # Under-glow beneath the ACTIVE (filled) part only: accent when idle,
+        # green when selected.  Never spans the empty track, so the highlight
+        # tracks the value rather than painting a full-width band.
+        if fill.width() > 0:
+            glow_color = focus_color if focus else (color.red(), color.green(), color.blue())
+            self._under_glow(
+                p,
+                fill,
+                glow_color,
+                t,
+                f if focus else 0.4,
+                bloom_px=22.0 if focus else 12.0,
+                alpha_base=56 if focus else 30,
+            )
 
         # Backdrop track (low-alpha unfilled band).
         bcol = QColor(color)
@@ -252,9 +261,9 @@ class LinearDashboardRenderer:
             p.setBrush(QBrush(g))
             p.drawRoundedRect(fill, radius, radius)
 
-        # Selection: green glowing outline around the selected bar, faded by focus.
+        # Selection: green glowing outline around the ACTIVE (filled) part only.
         if focus and fill.width() > 0:
-            self._paint_outline(p, track, focus_color, radius, f)
+            self._paint_outline(p, fill, focus_color, radius, f)
 
     @staticmethod
     def _paint_outline(p, rect, focus_color, radius: float, f: float) -> None:
