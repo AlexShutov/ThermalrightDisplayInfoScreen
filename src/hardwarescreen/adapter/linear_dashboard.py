@@ -100,6 +100,8 @@ class LinearDashboardRenderer:
         rng: random.Random | None = None,
         layout: BaseLayoutManager | None = None,
         fill_direction: str | None = None,
+        bar_corner_fraction: float | None = None,
+        fill_corner_fraction: float | None = None,
     ) -> None:
         # Константы заданы в конце файла, поэтому дефолт направления разрешаем
         # здесь (в сигнатуре имя константы ещё не объявлено на этапе определения).
@@ -112,6 +114,14 @@ class LinearDashboardRenderer:
             )
         self._fill_direction = fill_direction
         self._bar_vertical = self._bar_is_vertical(fill_direction)
+        # Радиусы скругления как ДОЛЯ толщины столбца (0..0.5): ``bar_corner_fraction``
+        # — общий для капсулы столбца (и его конца у начала бара); ``fill_corner_fraction``
+        # — для границы (кромки) заполненной части со стороны роста (сверху/справа).
+        # ``None`` = прежнее поведение: капсула (0.5) + плоская граница роста.
+        # Так размер зависит от толщины, а не от абсолютных px — не надо пересчитывать
+        # под другое разрешение панели.
+        self._bar_corner_fraction = bar_corner_fraction
+        self._fill_corner_fraction = fill_corner_fraction
         self._ease = _ensure_qt()
         self._size: tuple[int, int] = (int(size[0]), int(size[1]))
         self._background = background
@@ -275,7 +285,9 @@ class LinearDashboardRenderer:
             f = focus[i] if selection_on else 0.0
             dim = self._selection_dim(f, selection_on, selection_strength)
             self._paint_bar(p, rects[i], progress[i], specs[i]["color"], dim,
-                            self._fill_direction)
+                            self._fill_direction,
+                            bar_corner_fraction=self._bar_corner_fraction,
+                            fill_corner_fraction=self._fill_corner_fraction)
         p.end()
 
         pil = self._qimage_to_pil(img)
@@ -298,6 +310,9 @@ class LinearDashboardRenderer:
                         pil = self._paint_glow_pil(
                             pil, rects[i], fill_rect, focus_color, f,
                             vertical=self._bar_vertical,
+                            bar_corner_fraction=self._bar_corner_fraction,
+                            fill_corner_fraction=self._fill_corner_fraction,
+                            fill_direction=self._fill_direction,
                         )
         if specs:
             self._paint_text_pil(
@@ -403,16 +418,21 @@ class LinearDashboardRenderer:
 
     @staticmethod
     def _paint_glow_pil(img, bar_rect, fill_rect, focus_color,
-                        strength: float, *, vertical: bool = False):
+                        strength: float, *, vertical: bool = False,
+                        bar_corner_fraction: float | None = None,
+                        fill_corner_fraction: float | None = None,
+                        fill_direction: str | None = None):
         """Возвращает ``img`` с плавной зелёной тенью ТОЛЬКО наружу заполненной части.
 
-        Силуэт заливки строится как капсула всего бара (``bar_rect``), ограниченная
-        областью заливки (``fill_rect``): скруглённый конец у начала бара и плоская
-        граница роста — ровно той же формы, что и градиентная заливка в ``_paint_bar``.
-        Силуэт размывается гауссовым блюром (настоящий плавный градиент, без
-        дискретных колец), затем из размытой маски вырезается собственный footprint
-        заливки, чтобы свет расходился только вне залитой части и не тонировал её.
-        ``strength`` (0..1) = уровень фокуса.
+        Силуэт заливки строится той же формой, которой рисуется сама заливка в
+        ``_paint_bar``: капсула бара (``bar_rect``) с радиусом ``bar_corner_fraction``
+        (доля толщины) либо полной капсулой, ограниченная областью заливки
+        (``fill_rect``), у которой скруглены только углы границы роста
+        (``fill_corner_fraction`` либо плоская кромка).  Такой силуэт размывается
+        гауссовым блюром (настоящий плавный градиент, без дискретных колец), затем
+        из размытой маски вырезается собственный footprint заливки, чтобы свет
+        расходился только вне залитой части и не тонировал её.  ``strength`` (0..1)
+        = уровень фокуса.
 
         ``vertical=True`` — капсула относится к вертикальному столбцу, у которого
         скругление по ширине, а не по высоте (как у горизонтального бара).
@@ -425,6 +445,10 @@ class LinearDashboardRenderer:
         """
         from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
+        if fill_direction is None:
+            fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
+        if fill_direction not in ALLOWED_FILL_DIRECTIONS:
+            fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
         bar_left = int(bar_rect.x())
         bar_top = int(bar_rect.y())
         bar_width = int(bar_rect.width())
@@ -446,23 +470,22 @@ class LinearDashboardRenderer:
         box_height = box_bottom - box_top
         if box_width <= 0 or box_height <= 0:
             return img
-        # Радиус капсулы силуэта: у горизонтального бара — по высоте, у вертикального
-        # столбца — по ширине (чтобы совпадать с капсулой заливки в _paint_bar).
+        # Толщина бара (короткая сторона) — база для радиусов-долей.
         cap_size = bar_height if not vertical else bar_width
-        corner_radius = max(MIN_BAR_CORNER_RADIUS, cap_size / 2.0)
+        track_radius = _bar_track_radius(bar_rect, vertical, bar_corner_fraction)
+        fill_fraction = (fill_height / bar_height) if vertical else (fill_width / bar_width)
+        fill_radius = _fill_boundary_radius(fill_fraction, cap_size, fill_corner_fraction)
+        # Силуэт = капсула бара ∩ регион заливки со скруглением границы роста.
         silhouette = Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN)
         ImageDraw.Draw(silhouette).rounded_rectangle(
             [bar_left - box_left, bar_top - box_top,
              bar_left - box_left + bar_width, bar_top - box_top + bar_height],
-            radius=corner_radius,
+            radius=track_radius,
             fill=LUMINANCE_MAX,
         )
-        # Ограничиваем силуэт областью заливки — она придаёт плоскую границу роста.
-        region_mask = Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN)
-        ImageDraw.Draw(region_mask).rectangle(
-            [fill_left - box_left, fill_top - box_top,
-             fill_left - box_left + fill_width, fill_top - box_top + fill_height],
-            fill=LUMINANCE_MAX,
+        region_mask = _rounded_region_mask(
+            fill_rect, box_left, box_top, box_width, box_height,
+            *_fill_corner_radii(fill_direction, 0.0, fill_radius),
         )
         silhouette = ImageChops.multiply(silhouette, region_mask)
         blurred = silhouette.filter(ImageFilter.GaussianBlur(GLOW_BLUR_RADIUS_PX))
@@ -519,13 +542,21 @@ class LinearDashboardRenderer:
 
     @staticmethod
     def _paint_bar(p, rect, fill_frac: float, color, dim: float,
-                   fill_direction: str | None = None) -> None:
+                   fill_direction: str | None = None,
+                   bar_corner_fraction: float | None = None,
+                   fill_corner_fraction: float | None = None) -> None:
         """Рисует один бар (полоса низкого альфа + градиентная заливка), dim (0..1).
 
         ``fill_direction`` задаёт и ориентацию бара, и сторону роста заливки:
         горизонтальные бары (``left_to_right``/``right_to_left``) заполняются по
         ширине, вертикальные столбцы (``bottom_to_top``/``top_to_bottom``) — по
         высоте.
+
+        ``bar_corner_fraction`` (если задан) — радиус капсулы столбца как доля
+        толщины (0..0.5); ``None`` = полная капсула (0.5).  ``fill_corner_fraction``
+        (если задан) — радиус границы (кромки) залитой части со стороны роста как
+        доля толщины; ``None`` = плоская кромка.  Так размеры зависят от толщины
+        столбца, а не от абсолютных px.
         """
         from PySide6.QtCore import Qt
         from PySide6.QtGui import QBrush, QColor, QLinearGradient
@@ -534,11 +565,11 @@ class LinearDashboardRenderer:
             fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
 
         vertical = LinearDashboardRenderer._bar_is_vertical(fill_direction)
-        bar_height = rect.height()
         # У горизонтального бара скруглены концы по высоте; у вертикального
-        # столбца — по ширине (капсула повёрнута на 90°).
-        cap_size = bar_height if not vertical else rect.width()
-        corner_radius = max(MIN_BAR_CORNER_RADIUS, cap_size / 2.0)
+        # столбца — по ширине (капсула повёрнута на 90°).  Толщина (короткая
+        # сторона) — база для радиусов-долей.
+        cap_size = rect.height() if not vertical else rect.width()
+        track_radius = _bar_track_radius(rect, vertical, bar_corner_fraction)
         base_color = QColor(*color)
         p.setPen(Qt.NoPen)
         p.setOpacity(max(0.0, min(1.0, dim)))
@@ -546,12 +577,13 @@ class LinearDashboardRenderer:
         track_color = QColor(base_color)
         track_color.setAlpha(TRACK_ALPHA)
         p.setBrush(track_color)
-        p.drawRoundedRect(rect, corner_radius, corner_radius)
-        # Заливка (градиент): та же капсула бара, но ограниченная областью заливки.
-        # Так скруглённый конец у начала бара в точности совпадает с капсулой
-        # подложки, а граница роста заливки остаётся плоской — заливка не «выступает»
-        # из-под подложки разным скруглением (Qt клипит радиус к min(w,h)/2, из-за
-        # чего при малом заполнении скругления расходились).
+        p.drawRoundedRect(rect, track_radius, track_radius)
+        # Заливка (градиент) — капсула подложки, ограниченная областью заливки, у
+        # которой скруглены только углы границы роста (``fill_corner_fraction`` либо
+        # плоская кромка).  Так конец у начала бара всегда совпадает с капсулой
+        # подложки даже при малом заполнении, а радиус задаётся независимо для
+        # стороны роста (Qt клипит radius к min(w,h)/2, из-за чего раньше скругления
+        # заливки и подложки расходились).
         fill_fraction = max(0.0, min(1.0, fill_frac))
         if fill_fraction > 0:
             fill_region = LinearDashboardRenderer._fill_rect(
@@ -565,10 +597,17 @@ class LinearDashboardRenderer:
             gradient.setColorAt(GRADIENT_EDGE_HI, QColor(base_color))
             gradient.setColorAt(GRADIENT_EDGE_DARK, base_color.darker(FILL_GRADIENT_DARKER))
             gradient.setColorAt(GRADIENT_END, base_color.lighter(FILL_GRADIENT_LIGHTER))
+            fill_radius = _fill_boundary_radius(
+                fill_fraction, cap_size, fill_corner_fraction,
+            )
+            region_path = _rounded_path(
+                fill_region,
+                *_fill_corner_radii(fill_direction, 0.0, fill_radius),
+            )
             p.save()
-            p.setClipRect(fill_region)
+            p.setClipPath(region_path)
             p.setBrush(QBrush(gradient))
-            p.drawRoundedRect(rect, corner_radius, corner_radius)
+            p.drawRoundedRect(rect, track_radius, track_radius)
             p.restore()
         p.setOpacity(1.0)
 
@@ -692,7 +731,6 @@ GLOW_MARGIN_PX = 48          # запас области размытия вок
 GLOW_BLUR_RADIUS_PX = 16     # радиус гауссова размытия силуэта
 
 # Бар.
-MIN_BAR_CORNER_RADIUS = 2.0  # минимальный радиус скругления бара (px)
 TRACK_ALPHA = 40             # прозрачность полосы-подложки (0..255)
 FILL_GRADIENT_LIGHTER = 118  # осветление к краям заливки (%)
 FILL_GRADIENT_DARKER = 96    # затемнение в центре заливки (%)
@@ -750,3 +788,138 @@ NO_DATA_FONT_SIZE = 30
 NO_DATA_TEXT_PAD = 34
 NO_DATA_DASH_X_SPAN = 51
 NO_DATA_DASH_Y_SPAN = 28
+
+# --- Вспомогательная геометрия скруглений (индивидуальные радиусы по углам) ---
+# Вынесена в конец файла: использует константы выше (GLOW_MARGIN_PX, режимы
+# PIL-изображений) — в момент вызова они уже определены.
+
+
+def _bar_track_radius(rect, vertical: bool,
+                      bar_corner_fraction: float | None) -> float:
+    """Радиус капсулы бара/столбца как доля толщины (короткой стороны).
+
+    ``bar_corner_fraction`` (0..0.5) от толщины: у горизонтального бара толщина —
+    высота, у вертикального столбца — ширина.  По умолчанию (``None``) — полная
+    капсула (0.5).  Зажимается в [0, 0.5], чтобы не превышать половину толщины
+    (иначе Qt клипил бы сам, и заливка с подложкой расходились бы по углу).
+    """
+    thickness = rect.width() if vertical else rect.height()
+    fraction = 0.5 if bar_corner_fraction is None else bar_corner_fraction
+    fraction = min(max(0.0, fraction), 0.5)
+    return fraction * thickness
+
+
+def _fill_boundary_radius(fill_fraction: float, thickness: float,
+                          fill_corner_fraction: float | None) -> float:
+    """Радиус границы (кромки) заливки со стороны роста как доля толщины бара.
+
+    ``fill_corner_fraction`` (0..0.5) от ``thickness``.  По умолчанию (``None``)
+    граница плоская, но при 100% заполнении повторяет капсулу (0.5 толщины) — как в
+    прежнем поведении «капсула ∩ регион», когда регион заполнения совпадает с полным
+    баром и его конец оставался скруглённым.  Зажимается в [0, 0.5].
+    """
+    if fill_corner_fraction is None:
+        return 0.5 * thickness if fill_fraction >= 1.0 else 0.0
+    fraction = min(max(0.0, fill_corner_fraction), 0.5)
+    return fraction * thickness
+
+
+def _fill_corner_radii(fill_direction: str, track_radius: float,
+                       fill_radius: float) -> tuple[float, float, float, float]:
+    """Радиусы по 4 углам заливки в порядке (top-left, top-right, bottom-right,
+    bottom-left) для заданного направления заполнения.
+
+    ``track_radius`` относится к углам со стороны начала бара, ``fill_radius`` — к
+    углам со стороны границы роста.  В текущем рисовании заливка строится как
+    «капсула бара ∩ регион» (клип-капсула), поэтому для клип-региона в оба вызова
+    передаётся ``track_radius=0.0``: региону нужно скруглить только границу роста,
+    а конец у начала бара даёт сама капсула.  Если рисовать регион напрямую (без
+    подложки-капсулы), сюда нужно передать реальный ``track_radius``.
+    """
+    if fill_direction == FILL_DIRECTION_LEFT_TO_RIGHT:
+        return (track_radius, fill_radius, fill_radius, track_radius)
+    if fill_direction == FILL_DIRECTION_RIGHT_TO_LEFT:
+        return (fill_radius, track_radius, track_radius, fill_radius)
+    if fill_direction == FILL_DIRECTION_BOTTOM_TO_TOP:
+        return (fill_radius, fill_radius, track_radius, track_radius)
+    return (track_radius, track_radius, fill_radius, fill_radius)
+
+
+def _rounded_path(rect, tl: float, tr: float, br: float, bl: float):
+    """QPainterPath прямоугольника с индивидуальными радиусами по 4 углам.
+
+    Углы в порядке (top-left, top-right, bottom-right, bottom-left); каждый радиус
+    клипится к половине короткой стороны — как это делает Qt у ``drawRoundedRect``,
+    но здесь радиусы на концах разные, поэтому форма рисуется вручную.
+    """
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QPainterPath
+
+    x, y = rect.x(), rect.y()
+    width, height = rect.width(), rect.height()
+    limit = min(width, height) / 2.0
+    tl = min(max(0.0, tl), limit)
+    tr = min(max(0.0, tr), limit)
+    br = min(max(0.0, br), limit)
+    bl = min(max(0.0, bl), limit)
+    path = QPainterPath()
+    path.moveTo(x + tl, y)
+    path.lineTo(x + width - tr, y)
+    if tr > 0:
+        path.arcTo(QRectF(x + width - 2.0 * tr, y, 2.0 * tr, 2.0 * tr), 90.0, -90.0)
+    path.lineTo(x + width, y + height - br)
+    if br > 0:
+        path.arcTo(
+            QRectF(x + width - 2.0 * br, y + height - 2.0 * br, 2.0 * br, 2.0 * br),
+            0.0, -90.0,
+        )
+    path.lineTo(x + bl, y + height)
+    if bl > 0:
+        path.arcTo(QRectF(x, y + height - 2.0 * bl, 2.0 * bl, 2.0 * bl), 270.0, -90.0)
+    path.lineTo(x, y + tl)
+    if tl > 0:
+        path.arcTo(QRectF(x, y, 2.0 * tl, 2.0 * tl), 180.0, -90.0)
+    path.closeSubpath()
+    return path
+
+
+def _gray_qimage_to_luminance(qimg) -> Image.Image:
+    """QImage Grayscale8 -> PIL ``L`` (1 байт/пиксель)."""
+    width = qimg.width()
+    height = qimg.height()
+    ptr = qimg.constBits()
+    raw = ptr.tobytes() if hasattr(ptr, "tobytes") else bytes(ptr)
+    stride = qimg.bytesPerLine()
+    return Image.frombuffer(
+        IMAGE_MODE_LUMINANCE, (width, height), raw, PIL_RAW_MODE,
+        IMAGE_MODE_LUMINANCE, stride, 1,
+    )
+
+
+def _rounded_region_mask(rect, box_left: int, box_top: int,
+                         box_width: int, box_height: int,
+                         tl: float, tr: float, br: float, bl: float) -> Image.Image:
+    """Белая L-маска прямоугольника с индивидуальными радиусами в области кадра.
+
+    Используется как маска региона заливки (граница роста скруглена, углы со стороны
+    начала — 0), которой ограничивается капсула бара и в ``_paint_bar``, и в
+    ``_paint_glow_pil``, чтобы силуэт свечения совпадал с заливкой.  Отрисовывается
+    в квадранте рамки (``box_left``/``box_top``).
+    """
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    path = _rounded_path(
+        QRectF(rect.x() - box_left, rect.y() - box_top,
+               rect.width(), rect.height()),
+        tl, tr, br, bl,
+    )
+    qimg = QImage(box_width, box_height, QImage.Format_Grayscale8)
+    qimg.fill(0)
+    painter = QPainter(qimg)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(LUMINANCE_MAX, LUMINANCE_MAX, LUMINANCE_MAX))
+    painter.drawPath(path)
+    painter.end()
+    return _gray_qimage_to_luminance(qimg)

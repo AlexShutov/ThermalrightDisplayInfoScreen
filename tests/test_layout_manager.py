@@ -214,3 +214,14 @@ def test_explicit_too_many_columns_clamps_to_fit():
     # Стек центрирован; ширина столбца = usable/n.
     assert abs(r[0].x - (W - stack_width) / 2.0) < 1e-6
     assert abs(r[0].width - usable / 3) < 1e-6
+
+
+def test_explicit_gap_vertical_left_aligns_to_padding():
+    """stack_align="left" прижимает стек к левому краю (отступ = padding_x), а не центрирует."""
+    lm = ExplicitGapLayoutManager(bar_size=80.0, gap=40.0, stack_align="left")
+    r = lm.measure(W, H, 3, vertical=True)
+    assert abs(r[0].x - lm.padding_x) < 1e-6
+    # Горизонтальная раскладка при "left" прижимается к верхнему краю (edge_margin).
+    lm_h = ExplicitGapLayoutManager(bar_size=60.0, gap=30.0, stack_align="left")
+    r_h = lm_h.measure(W, H, 3)
+    assert abs(r_h[0].y - EDGE) < 1e-6

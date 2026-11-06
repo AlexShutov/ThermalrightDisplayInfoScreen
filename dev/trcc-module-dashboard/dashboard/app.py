@@ -29,6 +29,39 @@ log = logging.getLogger("hardwarescreen.dashboard")
 
 _KEY = "dashboard"
 
+# Физическая диагональ панели Trofeo Vision (маркетинговый «11.3") в дюймах — для
+# пересчёта «мм → px» через px_per_mm (когда размеры задаются в мм).
+DEVICE_DIAGONAL_INCHES = 11.3
+MM_PER_INCH = 25.4
+
+
+def _optional_float_env(name: str) -> float | None:
+    """Float из env (``HARDWARESCREEN_*``) либо ``None``, если пусто/не число."""
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("dashboard: env %s=%r is not a float; ignored", name, raw)
+        return None
+
+
+def _resolve_px_per_mm(size: tuple[int, int], env_value: float | None) -> float:
+    """Сколько пикселей панели приходится на 1 мм.
+
+    Если задан ``HARDWARESCREEN_PX_PER_MM`` — используется он; иначе выводим из
+    физической диагонали (11.3") и пиксельного размера панели (квадратные пиксели):
+    ``px_per_mm = diagonal_px / diagonal_mm``.
+    """
+    if env_value is not None and env_value > 0:
+        return env_value
+    width = max(1, int(size[0]))
+    height = max(1, int(size[1]))
+    diagonal_px = (width * width + height * height) ** 0.5
+    diagonal_mm = DEVICE_DIAGONAL_INCHES * MM_PER_INCH
+    return diagonal_px / diagonal_mm
+
 
 class _BridgeFrameSource(FrameSource):
     """Adapts our raw-RGB DashboardSource into a trcc ``RawFrame``."""
@@ -106,22 +139,34 @@ class DashboardModule(BaseModule, key=_KEY):
             fill_direction = os.environ.get(
                 "HARDWARESCREEN_FILL_DIRECTION", "left_to_right"
             ).strip().lower()
+            px_per_mm = _resolve_px_per_mm(
+                size, _optional_float_env("HARDWARESCREEN_PX_PER_MM")
+            )
             return LinearDashboardRenderer(
                 size, background=bg_image, fps=fps, fill_direction=fill_direction,
-                layout=self._make_layout(),
+                layout=self._make_layout(px_per_mm),
+                bar_corner_fraction=_optional_float_env(
+                    "HARDWARESCREEN_BAR_CORNER_FRACTION"
+                ),
+                fill_corner_fraction=_optional_float_env(
+                    "HARDWARESCREEN_FILL_CORNER_FRACTION"
+                ),
             )
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
         return None
 
     @staticmethod
-    def _make_layout():
+    def _make_layout(px_per_mm: float):
         """Velocity layout manager from the ``layout`` env / explicit geometry.
 
         ``HARDWARESCREEN_LAYOUT`` selects the way the columns are laid out:
         ``auto`` (default, fraction-derived size + dynamic gap), ``auto_gap`` (an
         explicit bar size with an auto-derived gap, way 1), or ``explicit_gap`` (an
-        explicit bar size + explicit gap, way 2).  The size/gap come from
-        ``HARDWARESCREEN_BAR_SIZE`` / ``HARDWARESCREEN_GAP``.
+        explicit bar size + explicit gap, way 2).  The size/gap come from the px env
+        (``HARDWARESCREEN_BAR_SIZE`` / ``HARDWARESCREEN_GAP``) or, if set, from the
+        mm env (``HARDWARESCREEN_BAR_SIZE_MM`` / ``HARDWARESCREEN_GAP_MM``) scaled by
+        ``px_per_mm`` — так размеры можно задавать в миллиметрах независимо от
+        разрешения панели.  Если заданы mm-размеры, раскладка считается явной.
         """
         from hardwarescreen.adapter.layout import (
             AutoGapLayoutManager,
@@ -130,27 +175,43 @@ class DashboardModule(BaseModule, key=_KEY):
 
         layout = os.environ.get("HARDWARESCREEN_LAYOUT", "auto").strip().lower()
 
-        def _float_env(name: str) -> float | None:
-            raw = os.environ.get(name)
-            if not raw:
-                return None
-            try:
-                return float(raw)
-            except ValueError:
-                return None
+        bar_size_mm = _optional_float_env("HARDWARESCREEN_BAR_SIZE_MM")
+        gap_mm = _optional_float_env("HARDWARESCREEN_GAP_MM")
+        padding_mm = _optional_float_env("HARDWARESCREEN_PADDING_MM")
+        stack_align = os.environ.get(
+            "HARDWARESCREEN_ALIGN", "center"
+        ).strip().lower()
+        bar_size = (
+            round(bar_size_mm * px_per_mm)
+            if bar_size_mm is not None
+            else _optional_float_env("HARDWARESCREEN_BAR_SIZE")
+        )
+        gap = (
+            round(gap_mm * px_per_mm)
+            if gap_mm is not None
+            else _optional_float_env("HARDWARESCREEN_GAP")
+        )
+        layout_kwargs = {"stack_align": stack_align}
+        if padding_mm is not None:
+            layout_kwargs["padding_x"] = round(padding_mm * px_per_mm)
+        if bar_size_mm is not None or gap_mm is not None:
+            layout = "explicit_gap" if gap is not None else "auto_gap"
 
-        bar_size = _float_env("HARDWARESCREEN_BAR_SIZE")
-        gap = _float_env("HARDWARESCREEN_GAP")
         if layout == "auto_gap":
             if bar_size is None:
-                raise ValueError("auto_gap layout needs HARDWARESCREEN_BAR_SIZE")
-            return AutoGapLayoutManager(bar_size=bar_size)
+                raise ValueError(
+                    "auto_gap layout needs a bar size "
+                    "(HARDWARESCREEN_BAR_SIZE or HARDWARESCREEN_BAR_SIZE_MM)"
+                )
+            return AutoGapLayoutManager(bar_size=bar_size, **layout_kwargs)
         if layout == "explicit_gap":
             if bar_size is None or gap is None:
                 raise ValueError(
-                    "explicit_gap layout needs HARDWARESCREEN_BAR_SIZE and HARDWARESCREEN_GAP"
+                    "explicit_gap layout needs a bar size and a gap"
                 )
-            return ExplicitGapLayoutManager(bar_size=bar_size, gap=gap)
+            return ExplicitGapLayoutManager(
+                bar_size=bar_size, gap=gap, **layout_kwargs
+            )
         if layout != "auto":
             raise ValueError(
                 f"HARDWARESCREEN_LAYOUT must be 'auto', 'auto_gap' or 'explicit_gap', "

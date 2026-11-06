@@ -74,6 +74,7 @@ class BaseLayoutManager:
         gap_ratio: float = 0.38,
         selection_scale: float = 1.22,
         min_slot: float = 8.0,
+        stack_align: str = "center",
     ) -> None:
         self._padding_x = padding_x
         self._edge_margin = edge_margin
@@ -82,6 +83,10 @@ class BaseLayoutManager:
         self._gap_ratio = gap_ratio
         self._selection_scale = selection_scale
         self._min_slot = min_slot
+        # Выравнивание стека вдоль оси раскладки: "left" (для вертикальных столбцов —
+        # к левому краю, для горизонтальных — к верхнему), "right"/"center".  Полезно,
+        # когда индикатор занимает только часть панели (например, слева).
+        self._stack_align = stack_align if stack_align in ("left", "center", "right") else "center"
 
     @property
     def padding_x(self) -> float:
@@ -110,6 +115,20 @@ class BaseLayoutManager:
         if base < self._min_slot and count > 1:
             gap = 0.0
         return gap
+
+    def _stack_start(self, container_size: float, total: float,
+                     start_margin: float) -> float:
+        """Начальная координата стека вдоль оси раскладки.
+
+        ``stack_align="left"`` — прижать к началу оси (для вертикальных столбцов —
+        отступ ``padding_x`` у левого края, для горизонтальных — ``edge_margin`` у
+        верхнего); ``"right"`` — к концу оси; иначе центрировать в панели.
+        """
+        if self._stack_align == "left":
+            return start_margin
+        if self._stack_align == "right":
+            return container_size - start_margin - total
+        return (container_size - total) / 2.0
 
     def measure(
         self,
@@ -142,6 +161,8 @@ class BaseLayoutManager:
             # толщина — компактная доля этой высоты (как толщина полосы референса
             # activity_linear_indicator), а не равномерный раздел ширины экрана —
             # иначе при малом числе индикаторов столбцы становятся широкими.
+            # Временное растягивание ряда по всей ширине: зазор заполняет остаток,
+            # чтобы группа столбцов занимала панель от левого до правого края.
             column_height = max(1.0, container_h - 2.0 * self._edge_margin)
             if n == 0:
                 return LayoutResult((), column_height)
@@ -149,14 +170,17 @@ class BaseLayoutManager:
             column_width = max(
                 self._min_slot, column_height * VERTICAL_COLUMN_WIDTH_FRACTION
             )
-            gap = self.gap_for(container_w, n)
-            total = column_width * n + gap * (n - 1)
-            if total > usable_width:
+            if column_width * n > usable_width:
                 # Не влезает — убираем зазор и сжимаем столбцы до доступной ширины.
-                gap = 0.0
                 column_width = usable_width / n
-                total = column_width * n
-            start_x = (container_w - total) / 2.0
+                gap = 0.0
+            elif n > 1:
+                # Остаток ширины распределяем равномерно между столбцами.
+                gap = (usable_width - column_width * n) / (n - 1)
+            else:
+                gap = 0.0
+            total = column_width * n + gap * (n - 1)
+            start_x = self._padding_x + (usable_width - total) / 2.0
             geometry = tuple(
                 BarGeometry(
                     start_x + i * (column_width + gap),
@@ -210,7 +234,7 @@ class BaseLayoutManager:
             if n == 0:
                 return LayoutResult((), column_height)
             usable_width = container_w - 2.0 * self._padding_x
-            column_width = max(self._min_slot, float(bar_size))
+            column_width = max(1.0, float(bar_size))
             gap = self.gap_for(container_w, n) if gap is None else max(0.0, float(gap))
             total = column_width * n + gap * (n - 1)
             if total > usable_width:
@@ -219,7 +243,7 @@ class BaseLayoutManager:
                 if total > usable_width:
                     column_width = usable_width / n
                     total = column_width * n
-            start_x = (container_w - total) / 2.0
+            start_x = self._stack_start(container_w, total, self._padding_x)
             geometry = tuple(
                 BarGeometry(
                     start_x + i * (column_width + gap),
@@ -234,7 +258,7 @@ class BaseLayoutManager:
         if n == 0:
             return LayoutResult((), bar_width)
         usable_height = container_h - 2.0 * self._edge_margin
-        bar_height = max(self._min_slot, float(bar_size))
+        bar_height = max(1.0, float(bar_size))
         gap = self.gap_for(container_h, n) if gap is None else max(0.0, float(gap))
         total = bar_height * n + gap * (n - 1)
         if total > usable_height:
@@ -243,7 +267,7 @@ class BaseLayoutManager:
             if total > usable_height:
                 bar_height = usable_height / n
                 total = bar_height * n
-        start_y = (container_h - total) / 2.0
+        start_y = self._stack_start(container_h, total, self._edge_margin)
         geometry = tuple(
             BarGeometry(
                 self._padding_x, start_y + i * (bar_height + gap), bar_width, bar_height

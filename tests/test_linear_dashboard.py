@@ -10,10 +10,25 @@ from __future__ import annotations
 
 import random
 
+from hardwarescreen.adapter import linear_dashboard as ld
 from hardwarescreen.adapter.layout import StaticLayoutManager
 from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer
 
 BARS = 6
+
+
+class _FakeRect:
+    """Минимальный заменитель ``QRectF`` для чистой геометрии (ширина/высота)."""
+
+    def __init__(self, width: float, height: float) -> None:
+        self._width = width
+        self._height = height
+
+    def width(self) -> float:
+        return self._width
+
+    def height(self) -> float:
+        return self._height
 
 
 def test_alternating_selection_selects_every_other_window():
@@ -128,3 +143,49 @@ def test_fill_direction_vertical_values_accepted_and_stored():
         renderer = LinearDashboardRenderer((1920, 440), fill_direction=direction)
         assert renderer._fill_direction == direction
         assert renderer._bar_vertical is True
+
+
+def test_bar_corner_fraction_defaults_to_full_capsule():
+    """По умолчанию капсула — половина толщины (гориз. по высоте, верт. по ширине)."""
+    assert ld._bar_track_radius(_FakeRect(300, 40), False, None) == 20.0
+    assert ld._bar_track_radius(_FakeRect(60, 300), True, None) == 30.0
+
+
+def test_bar_corner_fraction_is_fraction_of_thickness():
+    """Радиус — доля толщины столбца, зажатая в [0, 0.5]."""
+    assert ld._bar_track_radius(_FakeRect(300, 40), False, 0.3) == 12.0
+    assert ld._bar_track_radius(_FakeRect(300, 40), False, 0.0) == 0.0
+    assert ld._bar_track_radius(_FakeRect(300, 40), False, 0.6) == 20.0  # клип до 0.5
+    assert ld._bar_track_radius(_FakeRect(60, 300), True, 0.25) == 15.0
+
+
+def test_fill_corner_radii_per_direction():
+    """Порядок углов (tl, tr, br, bl): конец у начала — ``track_radius``, граница
+    роста — ``fill_radius``; направление задаёт, какие углы какому принадлежат."""
+    assert ld._fill_corner_radii("left_to_right", 10.0, 6.0) == (10.0, 6.0, 6.0, 10.0)
+    assert ld._fill_corner_radii("right_to_left", 10.0, 6.0) == (6.0, 10.0, 10.0, 6.0)
+    assert ld._fill_corner_radii("bottom_to_top", 10.0, 6.0) == (6.0, 6.0, 10.0, 10.0)
+    assert ld._fill_corner_radii("top_to_bottom", 10.0, 6.0) == (10.0, 10.0, 6.0, 6.0)
+
+
+def test_fill_boundary_radius_default_flat_unless_full():
+    """По умолчанию граница роста плоская, но при 100% повторяет капсулу (как раньше)."""
+    assert ld._fill_boundary_radius(0.5, 40.0, None) == 0.0
+    assert ld._fill_boundary_radius(1.0, 40.0, None) == 20.0
+    # Явная доля используется независимо от заполнения.
+    assert ld._fill_boundary_radius(0.5, 40.0, 0.2) == 8.0
+    assert ld._fill_boundary_radius(1.0, 40.0, 0.2) == 8.0
+    assert ld._fill_boundary_radius(0.5, 40.0, 0.0) == 0.0
+    assert ld._fill_boundary_radius(0.5, 40.0, 0.6) == 20.0  # клип до 0.5
+
+
+def test_renderer_stores_optional_corner_fractions():
+    """Опциональные радиусы-доли сохраняются на рендерере (или ``None`` по умолчанию)."""
+    renderer = LinearDashboardRenderer(
+        (1920, 440), bar_corner_fraction=0.3, fill_corner_fraction=0.2
+    )
+    assert renderer._bar_corner_fraction == 0.3
+    assert renderer._fill_corner_fraction == 0.2
+    default = LinearDashboardRenderer((1920, 440))
+    assert default._bar_corner_fraction is None
+    assert default._fill_corner_fraction is None
