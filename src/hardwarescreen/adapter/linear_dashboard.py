@@ -4,9 +4,10 @@ Builds a gap-preserving vertical stack of horizontal bars from bridge gauge
 ``setup``/``values``/``palette`` and renders an offscreen frame as raw RGB bytes, then
 paints each gauge's ``label``/``value`` text over it. Both the selection (focus) and the
 value (progress) transitions are eased over time — the bars never jump. A focused bar
-widens (``FOCUS_SCALE``) and reflows its neighbours, gets a glowing outline, and its drop
-shadow snaps to the active outline colour (green by default, overridable via
-``HARDWARESCREEN_FOCUS_COLOR``).
+widens (``FOCUS_SCALE``) and reflows its neighbours and glows green from below; its under-
+glow snaps to the active outline colour (green by default, overridable via
+``HARDWARESCREEN_FOCUS_COLOR``) instead of an invisible black drop shadow, which would be
+lost on the dark backdrop. Bars span the full panel height (no top/footer inset).
 
 Rendering paints the bars directly into a standalone ``QImage`` with a ``QPainter`` — no
 ``QApplication`` and no ``QGraphicsScene`` — then hand the frame to Pillow for the label/
@@ -83,8 +84,8 @@ class LinearDashboardRenderer:
         focus_transition_s: float = 0.6,
         value_tween_s: float = 0.6,
         margin: int = 40,
-        top: int = 96,
-        footer: int = 40,
+        top: int = 0,
+        footer: int = 0,
         gap: int = 16,
     ) -> None:
         (self._fscale, self._ease) = _ensure_qt()
@@ -273,14 +274,18 @@ class LinearDashboardRenderer:
         track = QRectF(left, top, length, t)
         fill = QRectF(left, top, length * max(0.0, min(fr, 1.0)), t)
 
-        # Soft drop shadow (layered, offset down).
+        # Soft under-glow instead of a black drop shadow.  On a dark/black
+        # backdrop a black shadow is invisible, so the bar is floated with a
+        # colour glow: the bar's own accent colour when idle, blending to the
+        # green focus colour when selected (the haze a focused bar casts).
+        glow = QColor(*focus_color) if f > 0.0 else QColor(color)
         p.setPen(Qt.NoPen)
-        for spread, alpha in ((0.0, 55), (6, 36), (12, 22), (18, 12), (24, 6)):
-            c = QColor(0, 0, 0)
+        for spread, alpha in ((0.0, 42), (6, 26), (12, 15), (18, 7)):
+            c = QColor(glow)
             c.setAlpha(alpha)
             p.setBrush(c)
             x = left - spread
-            y = top - spread + 8
+            y = top - spread + 7
             p.drawRoundedRect(
                 QRectF(x, y, length + 2 * spread, t + 2 * spread),
                 (t + 2 * spread) / 2.0,
@@ -303,38 +308,51 @@ class LinearDashboardRenderer:
             p.setBrush(QBrush(g))
             p.drawRoundedRect(fill, radius, radius)
 
-        # Selection: glowing outline in the active outline colour, faded by focus level.
+        # Selection: green light blooming from below the filled band, faded by
+        # focus level.
         if f > 0.0 and fill.width() > 0:
-            self._paint_glow(p, fill, radius, focus_color, t, f)
+            self._paint_glow(p, fill, focus_color, t, f)
 
     @staticmethod
-    def _paint_glow(p, rect, radius: float, focus_color, t: float, f: float) -> None:
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPen
+    def _paint_glow(p, rect, focus_color, t: float, f: float) -> None:
+        """Green light blooming from BELOW the focused bar's filled band.
 
-        focus_color = QColor(*focus_color)
-        core = max(1.5, t * 0.03)
-        for mult, alpha in ((7.0, 22), (4.5, 40), (2.8, 62)):
-            c = QColor(focus_color)
+        A set of widening, fading pill bands tucked under the bar's bottom edge
+        act as a soft light source underneath; a thin bright strip hugs the
+        lower seam.  Faded with the focus level; driven by the focus colour.
+        """
+        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtGui import QColor
+
+        fc = QColor(*focus_color)
+        bottom = rect.bottom()
+        center_x = rect.center().x()
+        half = rect.width() / 2.0
+        p.setPen(Qt.NoPen)
+        # Bigger/faint bands first so the small bright one paints on top,
+        # producing a bright seam that decays downward.
+        for grow, alpha in ((6.6, 11), (5.0, 22), (3.6, 38), (2.4, 60)):
+            c = QColor(fc)
             c.setAlpha(int(alpha * f))
-            pen = QPen(c, core * mult)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            p.setPen(pen)
-            p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(rect, radius, radius)
-        fc = QColor(focus_color)
-        fc.setAlpha(int(255 * f))
-        g = QLinearGradient(rect.left(), 0, rect.right(), 0)
-        g.setColorAt(0.0, fc.lighter(140))
-        g.setColorAt(0.12, fc)
-        g.setColorAt(0.85, fc.darker(130))
-        g.setColorAt(1.0, fc.lighter(140))
-        pen = QPen(QBrush(g), core)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.drawRoundedRect(rect, radius, radius)
+            p.setBrush(c)
+            hw = half + t * 0.35 * (grow - 1.0)
+            band = QRectF(
+                center_x - hw,
+                bottom - t * 0.08,
+                2.0 * hw,
+                t * grow,
+            )
+            p.drawRoundedRect(band, band.height() / 2.0, band.height() / 2.0)
+        # Bright core strip hugging the lower edge (the "lit" seam).
+        core = max(1.5, t * 0.05)
+        c = QColor(fc)
+        c.setAlpha(int(220 * f))
+        p.setBrush(c)
+        p.drawRoundedRect(
+            QRectF(rect.left(), bottom, rect.width(), core),
+            core / 2.0,
+            core / 2.0,
+        )
 
     @staticmethod
     def _qimage_to_pil(img) -> Image.Image:
