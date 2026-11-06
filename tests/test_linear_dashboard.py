@@ -53,7 +53,12 @@ class _FakeQRect:
         return self._height
 
 
-ss._QRECTF = _FakeQRect
+@pytest.fixture(autouse=True)
+def _geometry_without_qt(monkeypatch):
+    """Стратегии выбора работают без Qt: на время тестов файла подменяем ``QRectF``
+    на ``_FakeQRect`` и возвращаем реальный по завершении, чтобы не «протекать» в
+    другие тест-модули (которые используют настоящий Qt-рендерер)."""
+    monkeypatch.setattr(ss, "_QRECTF", _FakeQRect)
 
 
 def _vertical_geometry(centers: list[float], width: float = 80.0,

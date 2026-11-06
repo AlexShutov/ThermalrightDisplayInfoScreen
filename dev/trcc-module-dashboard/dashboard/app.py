@@ -15,11 +15,12 @@ import os
 import threading
 import time
 
-from PIL import Image
+from PIL import Image, ImageOps
 from trcc.adapters.modules._base import BaseModule
 from trcc.core.models import RawFrame
 from trcc.core.ports import FrameSource
 
+from hardwarescreen.adapter.dashboard import _palette
 from hardwarescreen.adapter.driver import AdapterDriver
 from hardwarescreen.adapter.poller import BridgePoller
 from hardwarescreen.adapter.source import DashboardSource
@@ -73,6 +74,43 @@ def _resolve_px_per_mm(size: tuple[int, int], env_value: float | None) -> float:
     return diagonal_px / diagonal_mm
 
 
+# --- Константы композита «линейный индикатор слева + кольца датчиков справа» ---
+# Правый отступ от края панели, мм (0.5см = 5мм).
+COMPOSITE_RIGHT_MARGIN_MM = 5.0
+# Зазор между левым линейным регионом и правой зоной колец, px.
+COMPOSITE_INNER_GAP_PX = 8
+# Цвет фона кадра, если не задана тема-картинка (палитра manager'а).
+_DEFAULT_BACKGROUND = (16, 18, 24)
+
+
+def _composite_enabled() -> bool:
+    """Включён ли композит «линейный слева + кольца справа».
+
+    ``HARDWARESCREEN_COMPOSITE`` = ``rings_right`` → композит; любой другой
+    (в т.ч. пустой) → только линейный индикатор (прежнее поведение).
+    """
+    return (os.environ.get("HARDWARESCREEN_COMPOSITE") or "").strip().lower() == "rings_right"
+
+
+def _composite_regions(size: tuple[int, int], px_per_mm: float) -> dict:
+    """Регионы кадра для композита.
+
+    Возвращает ``left_size`` (линейный индикатор), ``rings_size`` (квадратная зона
+    колец, по высоте панели) и ``rings_x`` (левая координата зоны колец, с правым
+    отступом ``COMPOSITE_RIGHT_MARGIN_MM``).
+    """
+    panel_w, panel_h = int(size[0]), int(size[1])
+    right_margin_px = round(COMPOSITE_RIGHT_MARGIN_MM * px_per_mm)
+    rings_side = panel_h
+    rings_x = max(0, panel_w - rings_side - right_margin_px)
+    left_width = max(1, rings_x - COMPOSITE_INNER_GAP_PX)
+    return {
+        "left_size": (left_width, panel_h),
+        "rings_size": (rings_side, rings_side),
+        "rings_x": rings_x,
+    }
+
+
 class _BridgeFrameSource(FrameSource):
     """Adapts our raw-RGB DashboardSource into a trcc ``RawFrame``."""
 
@@ -87,6 +125,113 @@ class _BridgeFrameSource(FrameSource):
 
     def close(self) -> None:
         self._src.close()
+
+
+class CompositeDashboardRenderer:
+    """Композитный ``frame_renderer``: линейный индикатор слева + кольца справа.
+
+    Контракт ``DashboardSource.frame_renderer``: ``__call__(setup, values, palette,
+    size, background) -> bytes`` (RGB ``w*h*3``). Обёрнутый Qt-линeйный рендерер
+    рисует ЛЕВЫЙ регион (RGBA-оверлей), ``activityrings.render_gauge_rings`` — зону
+    колец справа (кольцо на каждый датчик); всё накладывается на фон (тему) и
+    возвращается одним непрозрачным кадром. Если ``activityrings`` недоступен —
+    композит деградирует до линейного индикатора в левом регионе.
+
+    Кольца повторяют данные линейного: для каждого датчика ``min/max`` → доля,
+    цвет — ``value_color`` (при цветовой палитре) или общий акцент палитры.
+    """
+
+    def __init__(
+        self,
+        linear,
+        size: tuple[int, int],
+        *,
+        px_per_mm: float,
+        value_palette_on: bool,
+    ):
+        self._linear = linear
+        self._size = (int(size[0]), int(size[1]))
+        regions = _composite_regions(self._size, px_per_mm)
+        self._left_size = regions["left_size"]
+        self._rings_size = regions["rings_size"]
+        self._rings_x = regions["rings_x"]
+        self._value_palette_on = value_palette_on
+
+    def __call__(self, setup, values, palette, size, background=None) -> bytes:
+        pal = _palette(palette or {})
+        base = self._make_base(self._size, background, pal)
+        if (setup or []) and (values or {}):
+            raw_left = self._linear(setup, values, palette, self._left_size, None)
+            left_img = self._bytes_to_image(raw_left, self._left_size)
+            if left_img is not None:
+                if left_img.mode == "RGBA":
+                    base.paste(left_img, (0, 0), left_img)
+                else:
+                    base.paste(left_img, (0, 0))
+            rings_img = self._render_rings(setup, values, pal)
+            if rings_img is not None:
+                if rings_img.mode == "RGBA":
+                    base.paste(rings_img, (self._rings_x, 0), rings_img)
+                else:
+                    base.paste(rings_img, (self._rings_x, 0))
+        return base.tobytes()
+
+    @staticmethod
+    def _make_base(size, background, pal) -> Image.Image:
+        if background is not None:
+            try:
+                return ImageOps.fit(
+                    background.convert("RGB"), size, Image.Resampling.LANCZOS
+                )
+            except Exception:  # noqa: BLE001 - плохая тема не должна ронять кадр
+                pass
+        background_color = tuple(pal.get("background") or _DEFAULT_BACKGROUND)
+        return Image.new("RGB", size, background_color)
+
+    @staticmethod
+    def _bytes_to_image(raw: bytes, size: tuple[int, int]) -> Image.Image | None:
+        width, height = size
+        if len(raw) >= width * height * 4:
+            return Image.frombytes("RGBA", size, raw[: width * height * 4])
+        if len(raw) == width * height * 3:
+            return Image.frombytes("RGB", size, raw)
+        return None
+
+    def _render_rings(self, setup, values, pal) -> Image.Image | None:
+        try:
+            from activityrings.rings import render_gauge_rings
+
+            from hardwarescreen.adapter.dashboard import value_color
+        except Exception as exc:  # noqa: BLE001 - кольца опциональны
+            log.warning("dashboard: composite rings unavailable: %s", exc)
+            return None
+        entries: list[tuple[str, str, tuple[int, int, int], float]] = []
+        progress: dict[str, float] = {}
+        for gauge in setup:
+            gid = gauge.get("id", "")
+            ring_key = str(gid)
+            vmin = float(gauge.get("min", 0))
+            vmax = float(gauge.get("max", 100))
+            raw = values.get(gid)
+            denominator = (vmax - vmin) if vmax > vmin else 0
+            if isinstance(raw, (int, float)) and denominator:
+                fraction = (raw - vmin) / denominator
+            else:
+                fraction = 0.0
+            fraction = max(0.0, min(1.0, fraction))
+            if self._value_palette_on:
+                color = tuple(value_color(fraction))
+            else:
+                color = tuple(pal.get("accent") or (250, 250, 250))
+            entries.append((ring_key, gauge.get("label", ""), color, 1.0))
+            progress[ring_key] = fraction
+        if not entries:
+            return None
+        try:
+            return render_gauge_rings(entries, self._rings_size, progress=progress)
+        except Exception as exc:  # noqa: BLE001 - слишком много датчиков и т.п.
+            log.warning("dashboard: cannot render gauge rings: %s", exc)
+            return None
 
 
 class DashboardModule(BaseModule, key=_KEY):
@@ -152,17 +297,32 @@ class DashboardModule(BaseModule, key=_KEY):
             px_per_mm = _resolve_px_per_mm(
                 size, _optional_float_env("HARDWARESCREEN_PX_PER_MM")
             )
-            return LinearDashboardRenderer(
-                size, background=bg_image, fps=fps, fill_direction=fill_direction,
-                layout=self._make_layout(px_per_mm),
-                bar_corner_fraction=_optional_float_env(
+            renderer_kwargs = {
+                "fps": fps,
+                "fill_direction": fill_direction,
+                "layout": self._make_layout(px_per_mm),
+                "bar_corner_fraction": _optional_float_env(
                     "HARDWARESCREEN_BAR_CORNER_FRACTION"
                 ),
-                fill_corner_fraction=_optional_float_env(
+                "fill_corner_fraction": _optional_float_env(
                     "HARDWARESCREEN_FILL_CORNER_FRACTION"
                 ),
-                value_palette_on=_color_palette_enabled(),
-            )
+                "value_palette_on": _color_palette_enabled(),
+            }
+            if _composite_enabled():
+                region = _composite_regions(size, px_per_mm)
+                linear = LinearDashboardRenderer(
+                    region["left_size"], background=None, **renderer_kwargs
+                )
+                log.info(
+                    "dashboard: composite renderer (linear-left %s + gauge rings right)",
+                    (region["left_size"],),
+                )
+                return CompositeDashboardRenderer(
+                    linear, size, px_per_mm=px_per_mm,
+                    value_palette_on=_color_palette_enabled(),
+                )
+            return LinearDashboardRenderer(size, background=bg_image, **renderer_kwargs)
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
         return None
 
@@ -249,3 +409,4 @@ class DashboardModule(BaseModule, key=_KEY):
         key = self._driver.shown_key or self._panel_key or _KEY
         host.overlay.end(key)
         log.info("dashboard: ended overlay %s -> theme restored", key)
+
