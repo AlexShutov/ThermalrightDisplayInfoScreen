@@ -107,9 +107,57 @@ class DashboardModule(BaseModule, key=_KEY):
                 "HARDWARESCREEN_FILL_DIRECTION", "left_to_right"
             ).strip().lower()
             return LinearDashboardRenderer(
-                size, background=bg_image, fps=fps, fill_direction=fill_direction
+                size, background=bg_image, fps=fps, fill_direction=fill_direction,
+                layout=self._make_layout(),
             )
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
+        return None
+
+    @staticmethod
+    def _make_layout():
+        """Velocity layout manager from the ``layout`` env / explicit geometry.
+
+        ``HARDWARESCREEN_LAYOUT`` selects the way the columns are laid out:
+        ``auto`` (default, fraction-derived size + dynamic gap), ``auto_gap`` (an
+        explicit bar size with an auto-derived gap, way 1), or ``explicit_gap`` (an
+        explicit bar size + explicit gap, way 2).  The size/gap come from
+        ``HARDWARESCREEN_BAR_SIZE`` / ``HARDWARESCREEN_GAP``.
+        """
+        from hardwarescreen.adapter.layout import (
+            AutoGapLayoutManager,
+            ExplicitGapLayoutManager,
+        )
+
+        layout = os.environ.get("HARDWARESCREEN_LAYOUT", "auto").strip().lower()
+
+        def _float_env(name: str) -> float | None:
+            raw = os.environ.get(name)
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
+        bar_size = _float_env("HARDWARESCREEN_BAR_SIZE")
+        gap = _float_env("HARDWARESCREEN_GAP")
+        if layout == "auto_gap":
+            if bar_size is None:
+                raise ValueError("auto_gap layout needs HARDWARESCREEN_BAR_SIZE")
+            return AutoGapLayoutManager(bar_size=bar_size)
+        if layout == "explicit_gap":
+            if bar_size is None or gap is None:
+                raise ValueError(
+                    "explicit_gap layout needs HARDWARESCREEN_BAR_SIZE and HARDWARESCREEN_GAP"
+                )
+            return ExplicitGapLayoutManager(bar_size=bar_size, gap=gap)
+        if layout != "auto":
+            raise ValueError(
+                f"HARDWARESCREEN_LAYOUT must be 'auto', 'auto_gap' or 'explicit_gap', "
+                f"got {layout!r}"
+            )
+        # "auto" — прежнее поведение (доля размера + динамический зазор): рендерер
+        # сам подставляет SelectionLayoutManager, когда layout==None.
         return None
 
     def _load_background(self, path: str | None) -> Image.Image | None:

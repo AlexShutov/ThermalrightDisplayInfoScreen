@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: MIT
-from hardwarescreen.adapter.layout import SelectionLayoutManager, StaticLayoutManager
+from hardwarescreen.adapter.layout import (
+    AutoGapLayoutManager,
+    ExplicitGapLayoutManager,
+    SelectionLayoutManager,
+    StaticLayoutManager,
+)
 
 # Defaults mirror the 1920x440 panel (~2 mm edge margin ≈ 14 px at ~68 px/cm).
 W, H = 1920, 440
@@ -143,3 +148,69 @@ def test_vertical_empty_count():
     lm = SelectionLayoutManager()
     r = lm.measure(W, H, 0, vertical=True)
     assert len(r) == 0
+
+
+# -- explicit layout (ways 1 & 2) -------------------------------------------
+def test_auto_gap_vertical_uses_explicit_size_and_auto_gap():
+    lm = AutoGapLayoutManager(bar_size=80.0)
+    r = lm.measure(W, H, 3, vertical=True)
+    assert len(r) == 3
+    for geo in r.geometry:
+        assert abs(geo.width - 80.0) < 1e-6            # explicit column width
+        assert abs(geo.y - EDGE) < 1e-6                # top edge margin
+        assert abs((geo.y + geo.height) - (H - EDGE)) < 1e-6  # fills the height
+    gap = lm.gap_for(W, 3)                              # auto-derived gap
+    assert abs((r[1].x - (r[0].x + r[0].width)) - gap) < 1e-6
+    # Столбцы центрируются в панели.
+    assert abs((r[0].x + (r[2].x + r[2].width)) - W) < 1e-6
+
+
+def test_auto_gap_defaults_to_selection_enabled():
+    """Способ 1 (auto_gap) включён в выбор — рендер накладывает свечение/рост."""
+    lm = AutoGapLayoutManager(bar_size=80.0)
+    assert lm.is_selection_enabled is True
+    # Геометрия постоянна — не меняется от фокуса (как в SelectionLayoutManager).
+    a = lm.measure(W, H, 3, vertical=True)
+    b = lm.measure(W, H, 3, focus=[1.0, 0.0, 0.0], vertical=True)
+    assert [g for g in a.geometry] == [g for g in b.geometry]
+
+
+def test_explicit_gap_vertical_centers_stack():
+    lm = ExplicitGapLayoutManager(bar_size=80.0, gap=40.0)
+    r = lm.measure(W, H, 3, vertical=True)
+    assert len(r) == 3
+    for geo in r.geometry:
+        assert abs(geo.width - 80.0) < 1e-6
+    gaps = [r[i + 1].x - (r[i].x + r[i].width) for i in range(2)]
+    assert all(abs(g - 40.0) < 1e-6 for g in gaps)      # explicit gap
+    total = 80.0 * 3 + 40.0 * 2
+    assert abs((r[0].x + (r[2].x + r[2].width)) - W) < 1e-6
+    assert abs(r[0].x - (W - total) / 2.0) < 1e-6
+
+
+def test_explicit_gap_horizontal_uses_height_and_gap():
+    lm = ExplicitGapLayoutManager(bar_size=60.0, gap=30.0)
+    r = lm.measure(W, H, 4)
+    assert len(r) == 4
+    for geo in r.geometry:
+        assert abs(geo.height - 60.0) < 1e-6            # explicit bar height
+        assert abs(geo.width - (W - 2 * lm.padding_x)) < 1e-6
+    gaps = [r[i + 1].y - (r[i].y + r[i].height) for i in range(3)]
+    assert all(abs(g - 30.0) < 1e-6 for g in gaps)
+
+
+def test_explicit_too_many_columns_clamps_to_fit():
+    """Если явная ширина+зазор не влезают, зазор схлопывается, а ширина ужимается."""
+    lm = ExplicitGapLayoutManager(bar_size=900.0, gap=400.0)
+    r = lm.measure(W, H, 3, vertical=True)
+    usable = W - 2 * lm.padding_x
+    # Зазор обнулился: столбцы стоят подряд.
+    gap = r[1].x - (r[0].x + r[0].width)
+    assert gap < 1e-6
+    # Итоговый стек не вылезает за доступную ширину (столбцы ужаты до влезания).
+    stack_width = (r[2].x + r[2].width) - r[0].x
+    assert stack_width <= usable + 1e-6
+    assert r[2].x + r[2].width <= W + 1e-6
+    # Стек центрирован; ширина столбца = usable/n.
+    assert abs(r[0].x - (W - stack_width) / 2.0) < 1e-6
+    assert abs(r[0].width - usable / 3) < 1e-6

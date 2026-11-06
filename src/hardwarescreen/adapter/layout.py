@@ -17,6 +17,11 @@ selection effect (dim the others, grow + glow the selected bar):
   static layout.  Selection is expressed by the renderer on top of this constant
   geometry: the non-selected bars are dimmed, the selected bar grows in thickness,
   sits in the foreground (higher z-order) and gets a green glow.
+- ``AutoGapLayoutManager`` (way 1): an explicit ``bar_size`` (column width for
+  vertical / bar height for horizontal) plus the count; the gap is auto-derived and
+  the stack is centered.
+- ``ExplicitGapLayoutManager`` (way 2): the count, an explicit ``bar_size``, and an
+  explicit ``gap`` between columns; the stack is centered.
 """
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
@@ -178,6 +183,75 @@ class BaseLayoutManager:
         )
         return LayoutResult(geometry, bar_width)
 
+    def _measure_explicit(
+        self,
+        container_w: float,
+        container_h: float,
+        count: int,
+        *,
+        vertical: bool = False,
+        bar_size: float,
+        gap: float | None,
+    ) -> LayoutResult:
+        """Explicit geometry: items of a fixed ``bar_size`` placed with a fixed ``gap``.
+
+        ``vertical=True`` lays columns side by side along X (each ``bar_size`` wide,
+        filling the container height within the margins); otherwise the items are
+        horizontal rows stacked along Y (each ``bar_size`` tall, spanning the container
+        width).  ``gap`` of None auto-derives the spacing from ``gap_for``; otherwise
+        the given pixel value is used.  The stack is centered within the container.
+
+        If the items exceed the available space, the gap collapses to zero and the
+        ``bar_size`` is clamped to fit, so the stack never overflows the panel.
+        """
+        n = max(0, int(count))
+        if vertical:
+            column_height = max(1.0, container_h - 2.0 * self._edge_margin)
+            if n == 0:
+                return LayoutResult((), column_height)
+            usable_width = container_w - 2.0 * self._padding_x
+            column_width = max(self._min_slot, float(bar_size))
+            gap = self.gap_for(container_w, n) if gap is None else max(0.0, float(gap))
+            total = column_width * n + gap * (n - 1)
+            if total > usable_width:
+                gap = 0.0
+                total = column_width * n
+                if total > usable_width:
+                    column_width = usable_width / n
+                    total = column_width * n
+            start_x = (container_w - total) / 2.0
+            geometry = tuple(
+                BarGeometry(
+                    start_x + i * (column_width + gap),
+                    self._edge_margin,
+                    column_width,
+                    column_height,
+                )
+                for i in range(n)
+            )
+            return LayoutResult(geometry, column_width)
+        bar_width = max(1.0, container_w - 2.0 * self._padding_x)
+        if n == 0:
+            return LayoutResult((), bar_width)
+        usable_height = container_h - 2.0 * self._edge_margin
+        bar_height = max(self._min_slot, float(bar_size))
+        gap = self.gap_for(container_h, n) if gap is None else max(0.0, float(gap))
+        total = bar_height * n + gap * (n - 1)
+        if total > usable_height:
+            gap = 0.0
+            total = bar_height * n
+            if total > usable_height:
+                bar_height = usable_height / n
+                total = bar_height * n
+        start_y = (container_h - total) / 2.0
+        geometry = tuple(
+            BarGeometry(
+                self._padding_x, start_y + i * (bar_height + gap), bar_width, bar_height
+            )
+            for i in range(n)
+        )
+        return LayoutResult(geometry, bar_width)
+
 
 class StaticLayoutManager(BaseLayoutManager):
     """Equal-height bars filling the container height within the margins."""
@@ -209,6 +283,54 @@ class SelectionLayoutManager(BaseLayoutManager):
         self, container_w, container_h, count, focus=None, *, vertical=False
     ) -> LayoutResult:
         return self._measure_constant(container_w, container_h, count, vertical=vertical)
+
+
+class AutoGapLayoutManager(BaseLayoutManager):
+    """Способ 1: явная ширина/высота бара, автоматический зазор и число столбцов.
+
+    ``bar_size`` — ширина вертикального столбца (или высота горизонтального бара);
+    зазор между элементами подбирается из ``gap_for`` (как в авто-раскладке), а стек
+    центрируется в панели.  Выделение — эффект на стороне рендера (как в
+    ``SelectionLayoutManager``): невыделенные бары затемняются, выделенный растёт и
+    подсвечивается зелёным свечением.
+    """
+
+    is_selection_enabled = True
+
+    def __init__(self, bar_size: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._bar_size = float(bar_size)
+
+    def measure(
+        self, container_w, container_h, count, focus=None, *, vertical=False
+    ) -> LayoutResult:
+        return self._measure_explicit(
+            container_w, container_h, count, vertical=vertical,
+            bar_size=self._bar_size, gap=None,
+        )
+
+
+class ExplicitGapLayoutManager(BaseLayoutManager):
+    """Способ 2: число столбцов, ширина столбца и расстояние между столбцами.
+
+    Вся геометрия задана явно (``bar_size`` + ``gap``), стек центрируется в панели.
+    Выделение — эффект на стороне рендера (как в ``SelectionLayoutManager``).
+    """
+
+    is_selection_enabled = True
+
+    def __init__(self, bar_size: float, gap: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._bar_size = float(bar_size)
+        self._gap = max(0.0, float(gap))
+
+    def measure(
+        self, container_w, container_h, count, focus=None, *, vertical=False
+    ) -> LayoutResult:
+        return self._measure_explicit(
+            container_w, container_h, count, vertical=vertical,
+            bar_size=self._bar_size, gap=self._gap,
+        )
 
 
 # --- Константы ---
