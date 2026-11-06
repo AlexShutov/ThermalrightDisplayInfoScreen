@@ -6,8 +6,9 @@ rects.  Layout is decoupled from drawing/theme/focus code, so it is trivially
 testable and reusable for future panel sizes.
 
 A base class holds the shared configuration (paddings, dynamic gap, selection
-scale) and two subclasses implement the two modes selected by
-``is_selection_enabled``:
+scale) and the subclasses implement the layout modes.  Every subclass keeps the
+``is_selection_enabled`` flag, which drives whether the renderer applies the
+selection effect (dim the others, grow + glow the selected bar):
 
 - ``StaticLayoutManager`` (``is_selection_enabled=False``): every bar is the same
   height; the stack fills the container height within the margins.
@@ -89,17 +90,18 @@ class BaseLayoutManager:
     def edge_margin(self) -> float:
         return self._edge_margin
 
-    def gap_for(self, container_h: float, count: int) -> float:
-        """Gap between bars, scaled from the slot height (count + screen size)."""
+    def gap_for(self, container_size: float, count: int) -> float:
+        """Gap between bars, scaled from the slot size along the stacking axis
+        (screen height for horizontal bars, screen width for vertical columns)."""
         if count <= 1:
             return 0.0
-        slot = container_h / max(1, count)
+        slot = container_size / max(1, count)
         gap = slot * self._gap_ratio
         return min(self._gap_max, max(self._gap_min, gap))
 
-    def _resolve_gap(self, container_h: float, count: int, base: float) -> float:
+    def _resolve_gap(self, container_size: float, count: int, base: float) -> float:
         """Collapse the gap to zero rather than let bars fall below ``min_slot``."""
-        gap = self.gap_for(container_h, count)
+        gap = self.gap_for(container_size, count)
         if base < self._min_slot and count > 1:
             gap = 0.0
         return gap
@@ -110,12 +112,56 @@ class BaseLayoutManager:
         container_h: float,
         count: int,
         focus: Sequence[float] | None = None,
+        *,
+        vertical: bool = False,
     ) -> LayoutResult:
         raise NotImplementedError
 
-    def _measure_constant(self, container_w: float, container_h: float, count: int) -> LayoutResult:
-        """Constant geometry: equal-height bars with a uniform gap (no selection)."""
+    def _measure_constant(
+        self,
+        container_w: float,
+        container_h: float,
+        count: int,
+        *,
+        vertical: bool = False,
+    ) -> LayoutResult:
+        """Constant geometry: equal-size bars with a uniform gap (no selection).
+
+        ``vertical=True`` lays the bars out as columns side by side along X (each
+        column is ``base`` wide and fills the container height within the margins);
+        otherwise the bars are horizontal rows stacked along Y.
+        """
         n = max(0, int(count))
+        if vertical:
+            # Столбцы «растягиваются по высоте»: их длина — вся высота панели, а
+            # толщина — компактная доля этой высоты (как толщина полосы референса
+            # activity_linear_indicator), а не равномерный раздел ширины экрана —
+            # иначе при малом числе индикаторов столбцы становятся широкими.
+            column_height = max(1.0, container_h - 2.0 * self._edge_margin)
+            if n == 0:
+                return LayoutResult((), column_height)
+            usable_width = container_w - 2.0 * self._padding_x
+            column_width = max(
+                self._min_slot, column_height * VERTICAL_COLUMN_WIDTH_FRACTION
+            )
+            gap = self.gap_for(container_w, n)
+            total = column_width * n + gap * (n - 1)
+            if total > usable_width:
+                # Не влезает — убираем зазор и сжимаем столбцы до доступной ширины.
+                gap = 0.0
+                column_width = usable_width / n
+                total = column_width * n
+            start_x = (container_w - total) / 2.0
+            geometry = tuple(
+                BarGeometry(
+                    start_x + i * (column_width + gap),
+                    self._edge_margin,
+                    column_width,
+                    column_height,
+                )
+                for i in range(n)
+            )
+            return LayoutResult(geometry, column_width)
         bar_width = max(1.0, container_w - 2.0 * self._padding_x)
         if n == 0:
             return LayoutResult((), bar_width)
@@ -138,8 +184,10 @@ class StaticLayoutManager(BaseLayoutManager):
 
     is_selection_enabled = False
 
-    def measure(self, container_w, container_h, count, focus=None) -> LayoutResult:
-        return self._measure_constant(container_w, container_h, count)
+    def measure(
+        self, container_w, container_h, count, focus=None, *, vertical=False
+    ) -> LayoutResult:
+        return self._measure_constant(container_w, container_h, count, vertical=vertical)
 
 
 class SelectionLayoutManager(BaseLayoutManager):
@@ -157,5 +205,14 @@ class SelectionLayoutManager(BaseLayoutManager):
 
     is_selection_enabled = True
 
-    def measure(self, container_w, container_h, count, focus=None) -> LayoutResult:
-        return self._measure_constant(container_w, container_h, count)
+    def measure(
+        self, container_w, container_h, count, focus=None, *, vertical=False
+    ) -> LayoutResult:
+        return self._measure_constant(container_w, container_h, count, vertical=vertical)
+
+
+# --- Константы ---
+# Толщина вертикального столбца как доля его высоты (по аналогии с толщиной полосы
+# референса activity_linear_indicator): длина столбца — вся высота панели, а толщина
+# компактная, чтобы при малом числе индикаторов столбцы не растягивались по ширине.
+VERTICAL_COLUMN_WIDTH_FRACTION = 0.165

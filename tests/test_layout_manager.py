@@ -111,3 +111,35 @@ def test_empty_count():
     r = lm.measure(W, H, 0)
     assert len(r) == 0
     assert r.bar_width == W - 2 * lm.padding_x
+
+
+# -- vertical columns --------------------------------------------------------
+def test_vertical_columns_side_by_side_and_within_margins():
+    lm = StaticLayoutManager()
+    r = lm.measure(W, H, 3, vertical=True)
+    assert len(r) == 3
+    widths = [g.width for g in r.geometry]
+    assert max(widths) - min(widths) < 1e-6          # equal column widths
+    heights = [g.height for g in r.geometry]
+    assert max(heights) - min(heights) < 1e-6        # equal column heights
+    # Все столбцы заполняют высоту панели внутри отступов.
+    assert abs(r[0].y - EDGE) < 1e-6
+    assert abs((r[0].y + r[0].height) - (H - EDGE)) < 1e-6
+    # Столбцы идут подряд по X с равным зазором, не вылезая за края.
+    gaps = [r[i + 1].x - (r[i].x + r[i].width) for i in range(2)]
+    assert max(gaps) - min(gaps) < 1e-6
+    last = r[2]
+    assert last.x >= 0 and last.x + last.width <= W + 1e-6
+
+
+def test_vertical_columns_ignore_focus():
+    lm = SelectionLayoutManager()
+    a = lm.measure(W, H, 3, focus=[1.0, 0.0, 0.0], vertical=True)
+    b = lm.measure(W, H, 3, focus=None, vertical=True)
+    assert [g for g in a.geometry] == [g for g in b.geometry]
+
+
+def test_vertical_empty_count():
+    lm = SelectionLayoutManager()
+    r = lm.measure(W, H, 0, vertical=True)
+    assert len(r) == 0

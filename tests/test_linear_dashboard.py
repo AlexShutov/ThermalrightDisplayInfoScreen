@@ -112,3 +112,19 @@ def test_fill_direction_unknown_value_rejected():
 
     with pytest.raises(ValueError):
         LinearDashboardRenderer((1920, 440), fill_direction="diagonal")
+
+
+def test_fill_direction_vertical_detection():
+    """Вертикальные столбцы определяются по направлению заполнения."""
+    assert LinearDashboardRenderer._bar_is_vertical("bottom_to_top") is True
+    assert LinearDashboardRenderer._bar_is_vertical("top_to_bottom") is True
+    assert LinearDashboardRenderer._bar_is_vertical("left_to_right") is False
+    assert LinearDashboardRenderer._bar_is_vertical("right_to_left") is False
+
+
+def test_fill_direction_vertical_values_accepted_and_stored():
+    """Вертикальные направления принимаются и сохраняются на рендерере."""
+    for direction in ("bottom_to_top", "top_to_bottom"):
+        renderer = LinearDashboardRenderer((1920, 440), fill_direction=direction)
+        assert renderer._fill_direction == direction
+        assert renderer._bar_vertical is True

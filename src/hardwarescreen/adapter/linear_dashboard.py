@@ -110,11 +110,12 @@ class LinearDashboardRenderer:
                 f"fill_direction must be one of {ALLOWED_FILL_DIRECTIONS}, "
                 f"got {fill_direction!r}"
             )
+        self._fill_direction = fill_direction
+        self._bar_vertical = self._bar_is_vertical(fill_direction)
         self._ease = _ensure_qt()
         self._size: tuple[int, int] = (int(size[0]), int(size[1]))
         self._background = background
         self._fps = fps
-        self._fill_direction = fill_direction
         # Константы заданы в конце файла, поэтому дефолты разрешаем здесь
         # (в сигнатуре имена констант ещё не объявлены на этапе определения класса).
         self._vtween = VALUE_TWEEN_S if value_tween_s is None else value_tween_s
@@ -221,6 +222,7 @@ class LinearDashboardRenderer:
             self._size[1],
             n,
             focus if self._layout.is_selection_enabled else None,
+            vertical=self._bar_vertical,
         )
         progress: list[float] = []
         for i, spec in enumerate(specs):
@@ -236,20 +238,29 @@ class LinearDashboardRenderer:
         focus_color = _focus_color()
 
         # Grow the selected bar around its centre; non-selected bars keep the
-        # constant layout height, so all columns stay the same size when idle.
-        # Clamp the grown rect into the panel margins so the selected bar never
-        # overflows the panel at low gauge counts (it can only grow so tall).
+        # constant layout size, so all bars stay the same size when idle.  For the
+        # horizontal rows the growth is in thickness (height); for vertical columns
+        # it is in width.  Clamp the grown rect into the panel margins so a selected
+        # bar never overflows at low gauge counts.
         panel_h = self._size[1]
+        panel_w = self._size[0]
         margin = self._layout.edge_margin
         rects: list[QRectF] = []
         for i, geo in enumerate(layout.geometry):
             f = focus[i] if selection_on else 0.0
             scale = (1.0 + (self._layout.selection_scale - 1.0) * f) if selection_on else 1.0
-            h = geo.height * scale
-            cy = geo.center_y
-            top = max(float(margin), min(float(panel_h) - float(margin), cy - h / 2.0))
-            bottom = max(top, min(float(panel_h) - float(margin), cy + h / 2.0))
-            rects.append(QRectF(geo.x, top, geo.width, max(0.0, bottom - top)))
+            if self._bar_vertical:
+                grown = geo.width * scale
+                cx = geo.x + geo.width / 2.0
+                left = max(float(margin), min(float(panel_w) - float(margin), cx - grown / 2.0))
+                right = max(left, min(float(panel_w) - float(margin), cx + grown / 2.0))
+                rects.append(QRectF(left, geo.y, max(0.0, right - left), geo.height))
+            else:
+                grown = geo.height * scale
+                cy = geo.center_y
+                top = max(float(margin), min(float(panel_h) - float(margin), cy - grown / 2.0))
+                bottom = max(top, min(float(panel_h) - float(margin), cy + grown / 2.0))
+                rects.append(QRectF(geo.x, top, geo.width, max(0.0, bottom - top)))
 
         # Draw in increasing z-order: dimmed neighbours first, the selected bar (with
         # its green glow) last, on top — the correct overlay z-buffer ordering.
@@ -284,11 +295,15 @@ class LinearDashboardRenderer:
                         fill_rect = self._fill_rect(
                             rects[i], fill_fraction, self._fill_direction,
                         )
-                        pil = self._paint_glow_pil(pil, fill_rect, focus_color, f)
+                        pil = self._paint_glow_pil(
+                            pil, rects[i], fill_rect, focus_color, f,
+                            vertical=self._bar_vertical,
+                        )
         if specs:
             self._paint_text_pil(
                 pil, specs, layout, pal["text"],
                 focus if selection_on else None, pal["background"],
+                vertical=self._bar_vertical,
             )
         else:
             from PIL import ImageDraw
@@ -343,13 +358,16 @@ class LinearDashboardRenderer:
     def _paint_text_pil(self, img: Image.Image, specs: list[dict],
                         layout, text_color: tuple[int, int, int],
                         focus: list[float] | None = None,
-                        bg: tuple[int, int, int] = (0, 0, 0)) -> None:
+                        bg: tuple[int, int, int] = (0, 0, 0),
+                        *,
+                        vertical: bool = False) -> None:
         from PIL import ImageDraw
 
         d = ImageDraw.Draw(img)
         focus_values = focus if focus is not None else []
         selection_on = focus is not None
         selection_strength = max(focus_values) if focus_values else 0.0
+        label_font = _pil_font(LABEL_FONT_SIZE)
         for idx, (spec, geo) in enumerate(zip(specs, layout.geometry, strict=True)):
             focus_value = focus_values[idx] if idx < len(focus_values) else 0.0
             brightness = self._selection_dim(focus_value, selection_on, selection_strength)
@@ -359,25 +377,45 @@ class LinearDashboardRenderer:
                 int(round(text_color[1] * brightness + bg[1] * (1.0 - brightness))),
                 int(round(text_color[2] * brightness + bg[2] * (1.0 - brightness))),
             )
+            if vertical:
+                # Подпись — по центру X столбца: метка у верхнего края, значение у
+                # нижнего, чтобы стек заливки (снизу вверх/сверху вниз) не перекрыл текст.
+                center_x = int(geo.x + geo.width / 2.0)
+                bar_top = int(geo.y)
+                bar_bottom = int(geo.y + geo.height)
+                label_w = d.textlength(spec["label"], font=label_font)
+                d.text((center_x - int(label_w / 2.0), bar_top + LABEL_PAD_Y),
+                       spec["label"], fill=text_color_rgb, font=label_font)
+                value_w = d.textlength(spec["text"], font=label_font)
+                d.text((center_x - int(value_w / 2.0),
+                        bar_bottom - LABEL_PAD_Y - LABEL_FONT_SIZE),
+                       spec["text"], fill=text_color_rgb, font=label_font)
+                continue
             center_y = int(geo.center_y)
             bar_left = int(geo.x)
             bar_length = int(geo.width)
             _pil_text(d, spec["label"], bar_left + LABEL_PAD_X, center_y - LABEL_PAD_Y,
                       size=LABEL_FONT_SIZE, fill=text_color_rgb)
-            font = _pil_font(LABEL_FONT_SIZE)
-            value_w = d.textlength(spec["text"], font=font)
+            value_w = d.textlength(spec["text"], font=label_font)
             _pil_text(d, spec["text"],
                       bar_left + bar_length - LABEL_PAD_X - int(value_w),
                       center_y - LABEL_PAD_Y, size=LABEL_FONT_SIZE, fill=text_color_rgb)
 
     @staticmethod
-    def _paint_glow_pil(img, rect, focus_color, strength: float):
-        """Возвращает ``img`` с плавной зелёной тенью ТОЛЬКО наружу ``rect``.
+    def _paint_glow_pil(img, bar_rect, fill_rect, focus_color,
+                        strength: float, *, vertical: bool = False):
+        """Возвращает ``img`` с плавной зелёной тенью ТОЛЬКО наружу заполненной части.
 
-        Рисует силуэт бара (скруглённый прямоугольник), размывает его гауссовым
-        блюром (настоящий плавный градиент, без дискретных колец), затем вырезает
-        из размытой маски собственный footprint бара, чтобы свет расходился только
-        вне бара и не тонировал заливку.  ``strength`` (0..1) = уровень фокуса.
+        Силуэт заливки строится как капсула всего бара (``bar_rect``), ограниченная
+        областью заливки (``fill_rect``): скруглённый конец у начала бара и плоская
+        граница роста — ровно той же формы, что и градиентная заливка в ``_paint_bar``.
+        Силуэт размывается гауссовым блюром (настоящий плавный градиент, без
+        дискретных колец), затем из размытой маски вырезается собственный footprint
+        заливки, чтобы свет расходился только вне залитой части и не тонировал её.
+        ``strength`` (0..1) = уровень фокуса.
+
+        ``vertical=True`` — капсула относится к вертикальному столбцу, у которого
+        скругление по ширине, а не по высоте (как у горизонтального бара).
 
         Возвращает обработанный кадр: ``outward_alpha`` кладётся в альфа-канал
         полноразмерного светового слоя, который смешивается с ``img`` через
@@ -385,24 +423,33 @@ class LinearDashboardRenderer:
         полагался на изменение изображения на месте и в Pillow 13 этого не
         гарантирует, поэтому смешение здесь — статическое и возвращает новый кадр.
         """
-        from PIL import Image, ImageDraw, ImageFilter
+        from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-        bar_left = int(rect.x())
-        bar_top = int(rect.y())
-        bar_width = int(rect.width())
-        bar_height = int(rect.height())
+        bar_left = int(bar_rect.x())
+        bar_top = int(bar_rect.y())
+        bar_width = int(bar_rect.width())
+        bar_height = int(bar_rect.height())
         if bar_width <= 0 or bar_height <= 0:
             return img
-        # Ограничиваем область тени вокруг бара, чтобы не размывать весь кадр.
-        box_left = max(0, bar_left - GLOW_MARGIN_PX)
-        box_top = max(0, bar_top - GLOW_MARGIN_PX)
-        box_right = min(img.width, bar_left + bar_width + GLOW_MARGIN_PX)
-        box_bottom = min(img.height, bar_top + bar_height + GLOW_MARGIN_PX)
+        fill_left = int(fill_rect.x())
+        fill_top = int(fill_rect.y())
+        fill_width = int(fill_rect.width())
+        fill_height = int(fill_rect.height())
+        if fill_width <= 0 or fill_height <= 0:
+            return img
+        # Ограничиваем область тени вокруг залитой части, чтобы не размывать весь кадр.
+        box_left = max(0, fill_left - GLOW_MARGIN_PX)
+        box_top = max(0, fill_top - GLOW_MARGIN_PX)
+        box_right = min(img.width, fill_left + fill_width + GLOW_MARGIN_PX)
+        box_bottom = min(img.height, fill_top + fill_height + GLOW_MARGIN_PX)
         box_width = box_right - box_left
         box_height = box_bottom - box_top
         if box_width <= 0 or box_height <= 0:
             return img
-        corner_radius = max(MIN_BAR_CORNER_RADIUS, bar_height / 2.0)
+        # Радиус капсулы силуэта: у горизонтального бара — по высоте, у вертикального
+        # столбца — по ширине (чтобы совпадать с капсулой заливки в _paint_bar).
+        cap_size = bar_height if not vertical else bar_width
+        corner_radius = max(MIN_BAR_CORNER_RADIUS, cap_size / 2.0)
         silhouette = Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN)
         ImageDraw.Draw(silhouette).rounded_rectangle(
             [bar_left - box_left, bar_top - box_top,
@@ -410,8 +457,16 @@ class LinearDashboardRenderer:
             radius=corner_radius,
             fill=LUMINANCE_MAX,
         )
+        # Ограничиваем силуэт областью заливки — она придаёт плоскую границу роста.
+        region_mask = Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN)
+        ImageDraw.Draw(region_mask).rectangle(
+            [fill_left - box_left, fill_top - box_top,
+             fill_left - box_left + fill_width, fill_top - box_top + fill_height],
+            fill=LUMINANCE_MAX,
+        )
+        silhouette = ImageChops.multiply(silhouette, region_mask)
         blurred = silhouette.filter(ImageFilter.GaussianBlur(GLOW_BLUR_RADIUS_PX))
-        # Внутри footprint бара тень равна нулю — свет идёт только наружу.
+        # Внутри footprint заливки тень равна нулю — свет идёт только наружу.
         outside_mask = silhouette.point(lambda v: LUMINANCE_MAX - v)
         outward_alpha = Image.composite(
             blurred,
@@ -419,7 +474,7 @@ class LinearDashboardRenderer:
             outside_mask,
         ).point(lambda v: int(v * min(1.0, max(0.0, strength))))
         # Световой слой: полноразмерный RGBA (цвет фокуса), альфа = outward_alpha
-        # ровно в области вокруг бара, 0 вне её.
+        # ровно в области вокруг заливки, 0 вне её.
         light = Image.new(IMAGE_MODE_RGBA, img.size, (*focus_color, LUMINANCE_MIN))
         alpha_channel = light.getchannel("A")
         alpha_channel.paste(outward_alpha, (box_left, box_top))
@@ -427,11 +482,18 @@ class LinearDashboardRenderer:
         return Image.alpha_composite(img, light)
 
     @staticmethod
-    def _fill_rect(rect, fill_fraction: float, fill_direction: str):
-        """Участок бара, который заполнен значением (ширина × доля).
+    def _bar_is_vertical(fill_direction: str) -> bool:
+        """True for vertical columns (``bottom_to_top`` / ``top_to_bottom``)."""
+        return fill_direction in VERTICAL_FILL_DIRECTIONS
 
-        ``right_to_left`` — заливка начинается от правого края бара и растёт
-        влево; ``left_to_right`` (по умолчанию) — от левого края вправо.
+    @staticmethod
+    def _fill_rect(rect, fill_fraction: float, fill_direction: str):
+        """Участок бара, который заполнен значением (доля от его длины).
+
+        Горизонтальные бары заполняются по ширине, вертикальные столбцы — по
+        высоте.  Направление задаёт, от какого края растёт заливка:
+        ``left_to_right``/``top_to_bottom`` — от левого/верхнего края,
+        ``right_to_left``/``bottom_to_top`` — от правого/нижнего края.
         Возвращает ``QRectF`` той же итоговой геометрии, что и заливка бара,
         чтобы подсветка совпадала с заливкой.
         """
@@ -442,19 +504,28 @@ class LinearDashboardRenderer:
                 f"fill_direction must be one of {ALLOWED_FILL_DIRECTIONS}, "
                 f"got {fill_direction!r}"
             )
-        fill_width = rect.width() * max(0.0, min(1.0, fill_fraction))
+        fraction = max(0.0, min(1.0, fill_fraction))
         if fill_direction == FILL_DIRECTION_RIGHT_TO_LEFT:
-            return QRectF(rect.right() - fill_width, rect.y(), fill_width, rect.height())
-        return QRectF(rect.x(), rect.y(), fill_width, rect.height())
+            width = rect.width() * fraction
+            return QRectF(rect.right() - width, rect.y(), width, rect.height())
+        if fill_direction == FILL_DIRECTION_TOP_TO_BOTTOM:
+            height = rect.height() * fraction
+            return QRectF(rect.x(), rect.y(), rect.width(), height)
+        if fill_direction == FILL_DIRECTION_BOTTOM_TO_TOP:
+            height = rect.height() * fraction
+            return QRectF(rect.x(), rect.bottom() - height, rect.width(), height)
+        width = rect.width() * fraction
+        return QRectF(rect.x(), rect.y(), width, rect.height())
 
     @staticmethod
     def _paint_bar(p, rect, fill_frac: float, color, dim: float,
                    fill_direction: str | None = None) -> None:
         """Рисует один бар (полоса низкого альфа + градиентная заливка), dim (0..1).
 
-        ``fill_direction`` задаёт, от какой стороны бара растёт заливка:
-        ``right_to_left`` — от правого края влево, ``left_to_right`` (по
-        умолчанию) — слева направо.
+        ``fill_direction`` задаёт и ориентацию бара, и сторону роста заливки:
+        горизонтальные бары (``left_to_right``/``right_to_left``) заполняются по
+        ширине, вертикальные столбцы (``bottom_to_top``/``top_to_bottom``) — по
+        высоте.
         """
         from PySide6.QtCore import Qt
         from PySide6.QtGui import QBrush, QColor, QLinearGradient
@@ -462,27 +533,43 @@ class LinearDashboardRenderer:
         if fill_direction is None:
             fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
 
+        vertical = LinearDashboardRenderer._bar_is_vertical(fill_direction)
         bar_height = rect.height()
-        corner_radius = max(MIN_BAR_CORNER_RADIUS, bar_height / 2.0)
+        # У горизонтального бара скруглены концы по высоте; у вертикального
+        # столбца — по ширине (капсула повёрнута на 90°).
+        cap_size = bar_height if not vertical else rect.width()
+        corner_radius = max(MIN_BAR_CORNER_RADIUS, cap_size / 2.0)
         base_color = QColor(*color)
         p.setPen(Qt.NoPen)
         p.setOpacity(max(0.0, min(1.0, dim)))
-        # Подложка (полоса низкого альфа-канала).
+        # Подложка (полоса низкого альфа-канала) — капсула всего бара.
         track_color = QColor(base_color)
         track_color.setAlpha(TRACK_ALPHA)
         p.setBrush(track_color)
         p.drawRoundedRect(rect, corner_radius, corner_radius)
-        # Заливка (градиент) со скруглёнными концами, до доли значения.
+        # Заливка (градиент): та же капсула бара, но ограниченная областью заливки.
+        # Так скруглённый конец у начала бара в точности совпадает с капсулой
+        # подложки, а граница роста заливки остаётся плоской — заливка не «выступает»
+        # из-под подложки разным скруглением (Qt клипит радиус к min(w,h)/2, из-за
+        # чего при малом заполнении скругления расходились).
         fill_fraction = max(0.0, min(1.0, fill_frac))
         if fill_fraction > 0:
-            fill_rect = LinearDashboardRenderer._fill_rect(rect, fill_fraction, fill_direction)
-            gradient = QLinearGradient(rect.x(), 0.0, rect.x() + rect.width(), 0.0)
+            fill_region = LinearDashboardRenderer._fill_rect(
+                rect, fill_fraction, fill_direction,
+            )
+            if vertical:
+                gradient = QLinearGradient(0.0, rect.y(), 0.0, rect.y() + rect.height())
+            else:
+                gradient = QLinearGradient(rect.x(), 0.0, rect.x() + rect.width(), 0.0)
             gradient.setColorAt(GRADIENT_START, base_color.lighter(FILL_GRADIENT_LIGHTER))
             gradient.setColorAt(GRADIENT_EDGE_HI, QColor(base_color))
             gradient.setColorAt(GRADIENT_EDGE_DARK, base_color.darker(FILL_GRADIENT_DARKER))
             gradient.setColorAt(GRADIENT_END, base_color.lighter(FILL_GRADIENT_LIGHTER))
+            p.save()
+            p.setClipRect(fill_region)
             p.setBrush(QBrush(gradient))
-            p.drawRoundedRect(fill_rect, corner_radius, corner_radius)
+            p.drawRoundedRect(rect, corner_radius, corner_radius)
+            p.restore()
         p.setOpacity(1.0)
 
     def _active_index(self, focus: list[float], selection_on: bool):
@@ -634,12 +721,23 @@ FOCUS_EPSILON = 1e-6         # порог «есть активный бар»
 # Шкала процентов (для приведения 0..100 к доле 0..1).
 PERCENT_SCALE = 100.0
 
-# Направление заполнения столбцов: ``right_to_left`` — заливка растёт от правого
-# края влево, ``left_to_right`` (по умолчанию) — от левого края вправо.  Значения
-# совпадают с параметром направления сабмодуля activity_linear_indicator.
+# Направление заполнения столбцов (аналог параметра направления колец).  Горизонт
+# альные полосы: ``left_to_right`` (от левого края вправо) и ``right_to_left`` (от
+# правого края влево); вертикальные столбцы: ``bottom_to_top`` (снизу вверх) и
+# ``top_to_bottom`` (сверху вниз).  Все значения совпадают с сабмодулем
+# activity_linear_indicator.
 FILL_DIRECTION_LEFT_TO_RIGHT = "left_to_right"
 FILL_DIRECTION_RIGHT_TO_LEFT = "right_to_left"
-ALLOWED_FILL_DIRECTIONS = (FILL_DIRECTION_LEFT_TO_RIGHT, FILL_DIRECTION_RIGHT_TO_LEFT)
+FILL_DIRECTION_BOTTOM_TO_TOP = "bottom_to_top"
+FILL_DIRECTION_TOP_TO_BOTTOM = "top_to_bottom"
+ALLOWED_FILL_DIRECTIONS = (
+    FILL_DIRECTION_LEFT_TO_RIGHT,
+    FILL_DIRECTION_RIGHT_TO_LEFT,
+    FILL_DIRECTION_BOTTOM_TO_TOP,
+    FILL_DIRECTION_TOP_TO_BOTTOM,
+)
+# Направления вертикальных столбцов (бар растёт по высоте, а не ширине).
+VERTICAL_FILL_DIRECTIONS = (FILL_DIRECTION_BOTTOM_TO_TOP, FILL_DIRECTION_TOP_TO_BOTTOM)
 
 # Подписи (labels).
 LABEL_FONT_SIZE = 26
