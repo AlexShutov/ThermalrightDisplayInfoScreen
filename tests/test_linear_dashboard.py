@@ -11,6 +11,7 @@ from __future__ import annotations
 import random
 
 from hardwarescreen.adapter import linear_dashboard as ld
+from hardwarescreen.adapter.dashboard import value_color
 from hardwarescreen.adapter.layout import StaticLayoutManager
 from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer
 
@@ -189,3 +190,32 @@ def test_renderer_stores_optional_corner_fractions():
     default = LinearDashboardRenderer((1920, 440))
     assert default._bar_corner_fraction is None
     assert default._fill_corner_fraction is None
+
+
+def test_value_color_is_red_at_low_and_green_when_full():
+    """Солид-цвет колонки из шкалы «значение → цвет»: 0..10% — красный, 100% — зелёный."""
+    red = value_color(0.0)
+    green = value_color(1.0)
+    assert red == (255, 0, 0)
+    assert green == (0, 255, 0)
+    # Порог 10% — всё ещё красный; при 100% — чисто зелёный.
+    assert value_color(0.10) == red
+    assert value_color(0.95) != green
+
+
+def test_value_color_ramps_monotonically_to_green():
+    """Между 10% и 100% цвет растёт от красного к зелёному плавно и монотонно."""
+
+    def greenness(color):
+        return color[1] - color[0]  # доминанта зелёного над красным
+
+    prev = greenness(value_color(0.10))
+    assert prev < 0  # в начале шкалы красный доминирует
+    for f in (0.3, 0.5, 0.7, 0.9, 1.0):
+        cur = greenness(value_color(f))
+        assert cur >= prev, (f, prev, cur)
+        prev = cur
+    assert greenness(value_color(1.0)) > 0  # в конце зелёный доминирует
+
+
+

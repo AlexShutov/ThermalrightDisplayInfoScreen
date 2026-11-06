@@ -8,6 +8,7 @@ returning a raw RGB PIL image. The trcc module (GPL) hands this to the panel as 
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import colorsys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +40,36 @@ def hex_to_rgb(value: str) -> tuple[int, int, int]:
         return (int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16))
     except ValueError:
         return (80, 80, 90)
+
+
+def value_color(fill_fraction: float) -> tuple[int, int, int]:
+    """Цвет столбца дашборда по доле его заполнения (0..1).
+
+    Это **солид-цвет колонки**, а не пространственный градиент внутри бара: каждая
+    колонка окрашена одним плоским цветом, выбранным из шкалы «значение → цвет» по
+    её заполнению.  Полностью заполненная колонка — зелёная (``VALUE_COLOR_HUE_GREEN``),
+    при заполнении не выше ``VALUE_COLOR_LOW_THRESHOLD`` — красная (авария/пусто), а
+    между ними цвет плавно переходит от красного к зелёному по смыслу (через
+    оранжевый/жёлтый).  Промежуточные оттенки — линейная интерполяция оттенка HSV
+    от красного (0°) к зелёному (120°) при полной насыщенности.
+    """
+    fraction = max(0.0, min(1.0, fill_fraction))
+    hue = VALUE_COLOR_HUE_RED
+    if fraction > VALUE_COLOR_LOW_THRESHOLD:
+        ramp = (fraction - VALUE_COLOR_LOW_THRESHOLD) / (
+            1.0 - VALUE_COLOR_LOW_THRESHOLD
+        )
+        hue = VALUE_COLOR_HUE_RED + min(1.0, max(0.0, ramp)) * (
+            VALUE_COLOR_HUE_GREEN - VALUE_COLOR_HUE_RED
+        )
+    red, green, blue = colorsys.hsv_to_rgb(
+        hue, VALUE_COLOR_SATURATION, VALUE_COLOR_VALUE
+    )
+    return (
+        int(round(red * 255)),
+        int(round(green * 255)),
+        int(round(blue * 255)),
+    )
 
 
 def _palette(palette: dict) -> dict[str, tuple[int, int, int]]:
@@ -98,7 +129,7 @@ def gauge_layout(
                 h=bar_h,
                 text=text,
                 pct=pct,
-                color=c["accent"],
+                color=value_color(pct / 100.0),
             )
         )
         y += bar_h + gap
@@ -153,3 +184,13 @@ def _text(d: ImageDraw.ImageDraw, s: str, x: int, y: int, size: int = 28,
     except Exception:
         font = None
     d.text((x, y), s, fill=fill, font=font)
+
+
+# --- Константы (PEP 8: UPPER_CASE_WITH_UNDERSCORES) ---
+# Шкала «значение → цвет» для колонок дашборда (см. ``value_color``).  Оттенки —
+# HSV: красный (0°) внизу шкалы, зелёный (120°) наверху; ниже порога — чистый красный.
+VALUE_COLOR_LOW_THRESHOLD = 0.10        # заполнение ≤ этого — красный (авария/пусто)
+VALUE_COLOR_HUE_RED = 0.0               # оттенок красного (0°)
+VALUE_COLOR_HUE_GREEN = 120.0 / 360.0   # оттенок зелёного (120°), в HSV 0..1
+VALUE_COLOR_SATURATION = 1.0            # полная насыщенность (чистый цвет)
+VALUE_COLOR_VALUE = 1.0                 # полная яркость
