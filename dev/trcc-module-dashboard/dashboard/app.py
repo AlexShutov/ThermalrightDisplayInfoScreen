@@ -63,7 +63,8 @@ class DashboardModule(BaseModule, key=_KEY):
         # via an env var in the trcc daemon; absent -> solid palette background.
         bg_path = os.environ.get("HARDWARESCREEN_BACKGROUND_IMAGE")
         bg_image = self._load_background(bg_path)
-        self._source = DashboardSource(self._poller, size, bg_image)
+        renderer = self._make_renderer(size, bg_image)
+        self._source = DashboardSource(self._poller, size, bg_image, frame_renderer=renderer)
         self._frame_source = _BridgeFrameSource(self._source)
         self._driver = AdapterDriver(host.background, self._frame_source, key=_KEY)
         self._stop = threading.Event()
@@ -83,6 +84,21 @@ class DashboardModule(BaseModule, key=_KEY):
             self._panel_key = keys[0] if keys else self._panel_key
             self._driver.update(state, bool(keys), self._panel_key)
             time.sleep(0.5)
+
+    def _make_renderer(self, size, bg_image):
+        """Qt (PySide6) linear-indicator renderer by default; ``pillow`` for fallback.
+
+        The Qt renderer is injected as the ``DashboardSource`` frame_renderer (a stateful
+        callable). ``activity_linear_indicator`` (Widgets submodule) + PySide6 are lazy
+        imports, so enabling Qt only needs them present in the trcc interpreter.
+        """
+        mode = os.environ.get("HARDWARESCREEN_RENDERER", "qt").strip().lower()
+        if mode == "qt":
+            from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer
+
+            return LinearDashboardRenderer(size, background=bg_image)
+        log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
+        return None
 
     def _load_background(self, path: str | None) -> Image.Image | None:
         if not path or not os.path.exists(path):

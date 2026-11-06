@@ -3,9 +3,16 @@
 The trcc ``SourceDriver`` calls ``latest()`` every ``1/fps`` and hands the frame
 to the panel; trcc composites and encodes it. We keep only the newest composite
 (no queue) and return raw RGB bytes sized ``w*h*3``.
+
+Rendering is delegated to ``frame_renderer`` when given (a stateful callable with the
+signature ``render(setup, values, palette, size, background) -> bytes``, e.g. the Qt
+``LinearDashboardRenderer``); otherwise it falls back to the Pillow
+``compose_dashboard``. The default keeps this module Qt-free.
 """
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from PIL import Image
 
@@ -19,10 +26,12 @@ class DashboardSource:
         poller: BridgePoller,
         size: tuple[int, int] = DEFAULT_SIZE,
         background: Image.Image | None = None,
+        frame_renderer: Callable | None = None,
     ):
         self._poller = poller
         self._w, self._h = size
         self._background = background
+        self._renderer = frame_renderer
         self._state: dict | None = None
         self._frame: bytes | None = None
         self._closed = False
@@ -39,14 +48,21 @@ class DashboardSource:
         if state is not None:
             self._state = state
         st = self._state or {}
-        img = compose_dashboard(
-            st.get("setup") or [],
-            st.get("values") or {},
-            st.get("palette") or {},
-            (self._w, self._h),
-            self._background,
-        )
-        self._frame = img.tobytes()
+        setup = st.get("setup") or []
+        values = st.get("values") or {}
+        palette = st.get("palette") or {}
+        if self._renderer is not None:
+            frame = self._renderer(setup, values, palette, (self._w, self._h), self._background)
+        else:
+            img = compose_dashboard(
+                setup,
+                values,
+                palette,
+                (self._w, self._h),
+                self._background,
+            )
+            frame = img.tobytes()
+        self._frame = frame
         return self._frame
 
     def close(self) -> None:
