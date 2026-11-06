@@ -218,4 +218,59 @@ def test_value_color_ramps_monotonically_to_green():
     assert greenness(value_color(1.0)) > 0  # в конце зелёный доминирует
 
 
+def test_specs_color_follows_value_not_accent():
+    """Цвет бара определяется его значением (шкала «значение → цвет»), а не палитрой."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    specs = renderer._specs(
+        [
+            {"id": "a", "label": "A", "min": 0, "max": 100, "unit": "%"},
+            {"id": "b", "label": "B", "min": 0, "max": 100, "unit": "%"},
+        ],
+        {"a": 0, "b": 100},
+        {"accent": (79, 156, 249)},
+    )
+    assert specs[0]["color"] == value_color(0.0)
+    assert specs[1]["color"] == value_color(1.0)
+    assert specs[0]["color"] != specs[1]["color"]
+
+
+def test_specs_color_is_accent_when_value_palette_off():
+    """При выключенной палитре цвет бара — общий акцент, а не цвет значения."""
+    renderer = LinearDashboardRenderer((1920, 440), value_palette_on=False)
+    specs = renderer._specs(
+        [{"id": "a", "label": "A", "min": 0, "max": 100, "unit": "%"}],
+        {"a": 5.0},
+        {"accent": (79, 156, 249)},
+    )
+    assert specs[0]["color"] == (79, 156, 249)  # акцент по умолчанию (#4f9cf9)
+    assert specs[0]["color"] != value_color(0.05)
+
+
+def test_glow_color_uses_state_color_when_palette_on():
+    """Свечение выделенного бара — цвет его текущего состояния при включённой палитре."""
+    renderer = LinearDashboardRenderer((1920, 440), value_palette_on=True)
+    focus = (0, 200, 90)  # зелёный фокус-цвет
+    assert renderer._glow_color(0.4, focus) == value_color(0.4)
+    assert renderer._glow_color(0.4, focus) != focus
+
+
+def test_glow_color_is_focus_when_palette_off():
+    """Без палитры свечение остаётся зелёным фокус-цветом (прежнее поведение)."""
+    renderer = LinearDashboardRenderer((1920, 440), value_palette_on=False)
+    focus = (0, 200, 90)
+    assert renderer._glow_color(0.6, focus) == focus
+
+
+def test_track_color_uniform_when_palette_on():
+    """Подложка (задний фон) столбцов — единый нейтральный цвет при включённой палитре."""
+    renderer = LinearDashboardRenderer((1920, 440), value_palette_on=True)
+    assert renderer._track_color({"muted": (138, 147, 166)}) == (138, 147, 166)
+
+
+def test_track_color_none_when_palette_off():
+    """Без палитры подложка берётся из цвета самой заливки (``None``)."""
+    renderer = LinearDashboardRenderer((1920, 440), value_palette_on=False)
+    assert renderer._track_color({"muted": (138, 147, 166)}) is None
+
+
 

@@ -47,6 +47,16 @@ def _optional_float_env(name: str) -> float | None:
         return None
 
 
+def _color_palette_enabled() -> bool:
+    """Включена ли цветовая палитра столбцов (градиент «значение → цвет»).
+
+    ``HARDWARESCREEN_VALUE_COLOR`` = ``1``/``true``/``on`` → включено (по
+    умолчанию); ``0``/``false``/``off`` → выключено (столбцы общим акцентом).
+    """
+    raw = (os.environ.get("HARDWARESCREEN_VALUE_COLOR") or "").strip().lower()
+    return raw not in ("0", "false", "off", "no", "disable", "disabled")
+
+
 def _resolve_px_per_mm(size: tuple[int, int], env_value: float | None) -> float:
     """Сколько пикселей панели приходится на 1 мм.
 
@@ -151,6 +161,7 @@ class DashboardModule(BaseModule, key=_KEY):
                 fill_corner_fraction=_optional_float_env(
                     "HARDWARESCREEN_FILL_CORNER_FRACTION"
                 ),
+                value_palette_on=_color_palette_enabled(),
             )
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
         return None

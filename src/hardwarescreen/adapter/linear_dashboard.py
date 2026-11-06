@@ -40,7 +40,7 @@ import time
 
 from PIL import Image
 
-from .dashboard import DEFAULT_SIZE, _palette, hex_to_rgb
+from .dashboard import DEFAULT_SIZE, _palette, hex_to_rgb, value_color
 from .layout import BaseLayoutManager, SelectionLayoutManager
 
 _LF = None
@@ -102,6 +102,7 @@ class LinearDashboardRenderer:
         fill_direction: str | None = None,
         bar_corner_fraction: float | None = None,
         fill_corner_fraction: float | None = None,
+        value_palette_on: bool = True,
     ) -> None:
         # Константы заданы в конце файла, поэтому дефолт направления разрешаем
         # здесь (в сигнатуре имя константы ещё не объявлено на этапе определения).
@@ -122,6 +123,7 @@ class LinearDashboardRenderer:
         # под другое разрешение панели.
         self._bar_corner_fraction = bar_corner_fraction
         self._fill_corner_fraction = fill_corner_fraction
+        self._value_palette_on = value_palette_on
         self._ease = _ensure_qt()
         self._size: tuple[int, int] = (int(size[0]), int(size[1]))
         self._background = background
@@ -175,16 +177,45 @@ class LinearDashboardRenderer:
                 pct = ((raw - vmin) / denom * PERCENT_SCALE) if denom else 0.0
                 pct = max(0.0, min(PERCENT_SCALE, pct))
                 text = f"{raw:.0f}{unit}"
+            # Солид-цвет колонки: при включённой цветовой палитре — из шкалы
+            # «значение → цвет» (красный → зелёный по заполнению), иначе — общий
+            # акцент палитры (прежнее поведение).  Так «градиентная тема» столбцов
+            # включается/выключается одним флагом.
+            if self._value_palette_on:
+                color = value_color(pct / PERCENT_SCALE)
+            else:
+                color = palette["accent"]
             specs.append(
                 {
                     "id": gid,
                     "label": g.get("label", gid),
                     "text": text,
                     "pct": pct,
-                    "color": palette["accent"],
+                    "color": color,
                 }
             )
         return specs
+
+    def _track_color(self, palette: dict) -> tuple[int, int, int] | None:
+        """Цвет подложки (заднего фона) столбцов.
+
+        При включённой цветовой палитре — ОДИН и тот же нейтральный цвет
+        (``palette["muted"]``) для всех столбцов, независимо от цвета их заливки;
+        иначе ``None`` — подложка берётся из цвета самой заливки (прежнее поведение,
+        все столбцы в общий акцент).
+        """
+        return palette["muted"] if self._value_palette_on else None
+
+    def _glow_color(self, progress: float,
+                    focus_color: tuple[int, int, int]) -> tuple[int, int, int]:
+        """Цвет свечения выделенного бара.
+
+        При включённой цветовой палитре — цвет ТЕКУЩЕГО состояния бара
+        (``value_color(progress)``); без палитры — прежний зелёный фокус-цвет.
+        """
+        if self._value_palette_on:
+            return value_color(progress)
+        return focus_color
 
     def render(
         self,
@@ -246,6 +277,10 @@ class LinearDashboardRenderer:
         active = self._active_index(focus, selection_on)
         selection_strength = max(focus) if (selection_on and focus) else 0.0
         focus_color = _focus_color()
+        # При включённой цветовой палитре подложка (задний фон столбца) — ОДИН и
+        # тот же нейтральный цвет для всех столбцов (не их индивидуальный цвет
+        # значения), а свечение выделенного бара — цвет его текущего состояния.
+        track_color = self._track_color(pal)
 
         # Grow the selected bar around its centre; non-selected bars keep the
         # constant layout size, so all bars stay the same size when idle.  For the
@@ -284,16 +319,26 @@ class LinearDashboardRenderer:
         for i in order:
             f = focus[i] if selection_on else 0.0
             dim = self._selection_dim(f, selection_on, selection_strength)
-            self._paint_bar(p, rects[i], progress[i], specs[i]["color"], dim,
+            # Цвет заливки бара — ТЕКУЩЕЕ (анимированное) значение при включённой
+            # палитре, чтобы заливка и свечение выделенного бара не расходились на
+            # 0.3 с анимации; без палитры — общий акцент (прежнее поведение).
+            bar_color = (
+                value_color(progress[i])
+                if self._value_palette_on
+                else specs[i]["color"]
+            )
+            self._paint_bar(p, rects[i], progress[i], bar_color, dim,
                             self._fill_direction,
                             bar_corner_fraction=self._bar_corner_fraction,
-                            fill_corner_fraction=self._fill_corner_fraction)
+                            fill_corner_fraction=self._fill_corner_fraction,
+                            track_color=track_color)
         p.end()
 
         pil = self._qimage_to_pil(img)
-        # Плавная зелёная тень ТОЛЬКО наружу: гауссово-размытый силуэт выделенного
-        # бара, из которого вырезан собственный footprint, — свет расходится ровно
-        # вокруг бара и не тонирует сам бар.
+        # Плавная тень ТОЛЬКО наружу (гауссово-размытый силуэт заливки с вырезанным
+        # собственным footprint): при включённой цветовой палитре свечение выделенного
+        # бара — цветом ЕГО текущего состояния (значение → цвет), а не зелёным; без
+        # палитры — прежнее зелёное свечение (HARDWARESCREEN_FOCUS_COLOR).
         if selection_on:
             for i in range(n):
                 f = focus[i] if i < len(focus) else 0.0
@@ -307,8 +352,9 @@ class LinearDashboardRenderer:
                         fill_rect = self._fill_rect(
                             rects[i], fill_fraction, self._fill_direction,
                         )
+                        glow_color = self._glow_color(progress[i], focus_color)
                         pil = self._paint_glow_pil(
-                            pil, rects[i], fill_rect, focus_color, f,
+                            pil, rects[i], fill_rect, glow_color, f,
                             vertical=self._bar_vertical,
                             bar_corner_fraction=self._bar_corner_fraction,
                             fill_corner_fraction=self._fill_corner_fraction,
@@ -417,12 +463,12 @@ class LinearDashboardRenderer:
                       center_y - LABEL_PAD_Y, size=LABEL_FONT_SIZE, fill=text_color_rgb)
 
     @staticmethod
-    def _paint_glow_pil(img, bar_rect, fill_rect, focus_color,
+    def _paint_glow_pil(img, bar_rect, fill_rect, glow_color,
                         strength: float, *, vertical: bool = False,
                         bar_corner_fraction: float | None = None,
                         fill_corner_fraction: float | None = None,
                         fill_direction: str | None = None):
-        """Возвращает ``img`` с плавной зелёной тенью ТОЛЬКО наружу заполненной части.
+        """Возвращает ``img`` с плавной цветной тенью ТОЛЬКО наружу заполненной части.
 
         Силуэт заливки строится той же формой, которой рисуется сама заливка в
         ``_paint_bar``: капсула бара (``bar_rect``) с радиусом ``bar_corner_fraction``
@@ -432,7 +478,8 @@ class LinearDashboardRenderer:
         гауссовым блюром (настоящий плавный градиент, без дискретных колец), затем
         из размытой маски вырезается собственный footprint заливки, чтобы свет
         расходился только вне залитой части и не тонировал её.  ``strength`` (0..1)
-        = уровень фокуса.
+        = уровень фокуса; ``glow_color`` — цвет свечения (цвет состояния бара при
+        включённой палитре либо зелёный фокус-цвет).
 
         ``vertical=True`` — капсула относится к вертикальному столбцу, у которого
         скругление по ширине, а не по высоте (как у горизонтального бара).
@@ -496,9 +543,9 @@ class LinearDashboardRenderer:
             Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN),
             outside_mask,
         ).point(lambda v: int(v * min(1.0, max(0.0, strength))))
-        # Световой слой: полноразмерный RGBA (цвет фокуса), альфа = outward_alpha
+        # Световой слой: полноразмерный RGBA (цвет свечения), альфа = outward_alpha
         # ровно в области вокруг заливки, 0 вне её.
-        light = Image.new(IMAGE_MODE_RGBA, img.size, (*focus_color, LUMINANCE_MIN))
+        light = Image.new(IMAGE_MODE_RGBA, img.size, (*glow_color, LUMINANCE_MIN))
         alpha_channel = light.getchannel("A")
         alpha_channel.paste(outward_alpha, (box_left, box_top))
         light.putalpha(alpha_channel)
@@ -544,8 +591,9 @@ class LinearDashboardRenderer:
     def _paint_bar(p, rect, fill_frac: float, color, dim: float,
                    fill_direction: str | None = None,
                    bar_corner_fraction: float | None = None,
-                   fill_corner_fraction: float | None = None) -> None:
-        """Рисует один бар (полоса низкого альфа + градиентная заливка), dim (0..1).
+                   fill_corner_fraction: float | None = None,
+                   track_color: tuple[int, int, int] | None = None) -> None:
+        """Рисует один бар (полоса низкого альфа + солид-заливка цветом колонки), dim (0..1).
 
         ``fill_direction`` задаёт и ориентацию бара, и сторону роста заливки:
         горизонтальные бары (``left_to_right``/``right_to_left``) заполняются по
@@ -557,9 +605,15 @@ class LinearDashboardRenderer:
         (если задан) — радиус границы (кромки) залитой части со стороны роста как
         доля толщины; ``None`` = плоская кромка.  Так размеры зависят от толщины
         столбца, а не от абсолютных px.
+
+        ``track_color`` — цвет подложки (заднего фона) столбца.  Если задан, он
+        используется для всех столбцов ОДИНАКОВЫЙ (независимо от цвета их заливки);
+        если ``None`` — подложка берётся из ``color`` (цвет самой заливки).  Это
+        нужно, чтобы при градиентной теме (цвет по значению) подложки всех столбцов
+        были единого нейтрального цвета, а не каждая своего.
         """
         from PySide6.QtCore import Qt
-        from PySide6.QtGui import QBrush, QColor, QLinearGradient
+        from PySide6.QtGui import QColor
 
         if fill_direction is None:
             fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
@@ -573,13 +627,15 @@ class LinearDashboardRenderer:
         base_color = QColor(*color)
         p.setPen(Qt.NoPen)
         p.setOpacity(max(0.0, min(1.0, dim)))
-        # Подложка (полоса низкого альфа-канала) — капсула всего бара.
-        track_color = QColor(base_color)
-        track_color.setAlpha(TRACK_ALPHA)
-        p.setBrush(track_color)
+        # Подложка (полоса низкого альфа-канала) — капсула всего бара.  Цвет —
+        # либо единый ``track_color``, либо цвет заливки ``color``.
+        track_rgb = track_color if track_color is not None else tuple(color)
+        track_color_q = QColor(*track_rgb)
+        track_color_q.setAlpha(TRACK_ALPHA)
+        p.setBrush(track_color_q)
         p.drawRoundedRect(rect, track_radius, track_radius)
-        # Заливка (градиент) — капсула подложки, ограниченная областью заливки, у
-        # которой скруглены только углы границы роста (``fill_corner_fraction`` либо
+        # Заливка — капсула подложки, ограниченная областью заливки, у которой
+        # скруглены только углы границы роста (``fill_corner_fraction`` либо
         # плоская кромка).  Так конец у начала бара всегда совпадает с капсулой
         # подложки даже при малом заполнении, а радиус задаётся независимо для
         # стороны роста (Qt клипит radius к min(w,h)/2, из-за чего раньше скругления
@@ -589,14 +645,6 @@ class LinearDashboardRenderer:
             fill_region = LinearDashboardRenderer._fill_rect(
                 rect, fill_fraction, fill_direction,
             )
-            if vertical:
-                gradient = QLinearGradient(0.0, rect.y(), 0.0, rect.y() + rect.height())
-            else:
-                gradient = QLinearGradient(rect.x(), 0.0, rect.x() + rect.width(), 0.0)
-            gradient.setColorAt(GRADIENT_START, base_color.lighter(FILL_GRADIENT_LIGHTER))
-            gradient.setColorAt(GRADIENT_EDGE_HI, QColor(base_color))
-            gradient.setColorAt(GRADIENT_EDGE_DARK, base_color.darker(FILL_GRADIENT_DARKER))
-            gradient.setColorAt(GRADIENT_END, base_color.lighter(FILL_GRADIENT_LIGHTER))
             fill_radius = _fill_boundary_radius(
                 fill_fraction, cap_size, fill_corner_fraction,
             )
@@ -606,7 +654,9 @@ class LinearDashboardRenderer:
             )
             p.save()
             p.setClipPath(region_path)
-            p.setBrush(QBrush(gradient))
+            # Солид-заливка: один плоский цвет колонки (из шкалы «значение → цвет»),
+            # без пространственного градиента внутри бара — как «solid» в CSS.
+            p.setBrush(base_color)
             p.drawRoundedRect(rect, track_radius, track_radius)
             p.restore()
         p.setOpacity(1.0)
@@ -732,12 +782,6 @@ GLOW_BLUR_RADIUS_PX = 16     # радиус гауссова размытия с
 
 # Бар.
 TRACK_ALPHA = 40             # прозрачность полосы-подложки (0..255)
-FILL_GRADIENT_LIGHTER = 118  # осветление к краям заливки (%)
-FILL_GRADIENT_DARKER = 96    # затемнение в центре заливки (%)
-GRADIENT_START = 0.0
-GRADIENT_EDGE_HI = 0.12
-GRADIENT_EDGE_DARK = 0.85
-GRADIENT_END = 1.0
 
 # Скорость анимации значения: бар «добегает» от прежнего значения до нового за
 # 300 мс (окно данных ~5 с, но движение полоски — быстрым, а не 5-секундным).
