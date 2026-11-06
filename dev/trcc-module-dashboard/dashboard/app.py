@@ -1,10 +1,11 @@
 """Phase 3: theme-manager dashboard adapter module (GPL-3.0, imports trcc).
 
 Reads the manager's atomic bridge state file (``HARDWARESCREEN_STATE_FILE``),
-publishes gauges to the panel as a background ``FrameSource``, and defers
-``background.show`` until a panel is attached (the Phase 0 attach-race guard).
-The pure logic (poller/layout/source/driver) lives in the MIT ``hardwarescreen``
-package; this module only wires it to ``host.background`` / ``host.panels``.
+publishes gauges to the panel as an OVERLAY ``FrameSource`` (on top of the
+theme, which keeps playing beneath it), and defers ``overlay.show`` until a
+panel is attached (the Phase 0 attach-race guard). The pure logic
+(poller/layout/source/driver) lives in the MIT ``hardwarescreen`` package; this
+module only wires it to ``host.overlay`` / ``host.panels``.
 """
 # SPDX-License-Identifier: GPL-3.0-only
 from __future__ import annotations
@@ -59,8 +60,9 @@ class DashboardModule(BaseModule, key=_KEY):
         size = host.panels.size(keys[0]) if keys else (1920, 440)
         self._panel_key = keys[0] if keys else None
         self._poller = BridgePoller(AtomicStateFile(state_file))
-        # Optional theme frame to composite the gauges over (overlay). Populated
-        # via an env var in the trcc daemon; absent -> solid palette background.
+        # Optional theme frame to composite the gauges over (the overlay's
+        # backdrop beneath the live data). Populated via an env var in the
+        # trcc daemon; absent -> solid palette background.
         bg_path = os.environ.get("HARDWARESCREEN_BACKGROUND_IMAGE")
         bg_image = self._load_background(bg_path)
         render_fps = float(os.environ.get("HARDWARESCREEN_RENDER_FPS", "8.0"))
@@ -69,7 +71,9 @@ class DashboardModule(BaseModule, key=_KEY):
             self._poller, size, bg_image, frame_renderer=renderer, fps=render_fps
         )
         self._frame_source = _BridgeFrameSource(self._source)
-        self._driver = AdapterDriver(host.background, self._frame_source, key=_KEY)
+        self._driver = AdapterDriver(
+            host.overlay, self._frame_source, key=_KEY, fps=render_fps
+        )
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -80,8 +84,8 @@ class DashboardModule(BaseModule, key=_KEY):
             # Keep the newest state across quiet ticks so a now-changed seq is not
             # mistaken for "no data" (which would end the dashboard every poll).
             state = self._poller.poll() or self._poller.last
-            # The background belongs to a PANEL (device), not this module: trcc's
-            # ``background.show``/``end`` take the panel key, so resolve it from
+            # The overlay belongs to a PANEL (device), not this module: trcc's
+            # ``overlay.show``/``end`` take the panel key, so resolve it from
             # the attached panels (empty → module not yet attached: defer show).
             keys = self._host.panels.attached()
             self._panel_key = keys[0] if keys else self._panel_key
@@ -118,5 +122,5 @@ class DashboardModule(BaseModule, key=_KEY):
     def _disable(self, host) -> None:
         self._stop.set()
         key = self._driver.shown_key or self._panel_key or _KEY
-        host.background.end(key)
-        log.info("dashboard: ended %s -> theme restored", key)
+        host.overlay.end(key)
+        log.info("dashboard: ended overlay %s -> theme restored", key)

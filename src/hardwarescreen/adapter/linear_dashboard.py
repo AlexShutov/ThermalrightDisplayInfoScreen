@@ -285,19 +285,17 @@ class LinearDashboardRenderer:
         return pil.tobytes()
 
     def _make_image(self, palette: dict, background=None):
-        from PySide6.QtGui import QColor, QImage
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage
 
         w, h = self._size
         bg = self._background if background is None else background
         if bg is None:
-            img = QImage(w, h, QImage.Format_RGB888)
-            img.fill(
-                QColor(
-                    int(palette["background"][0]),
-                    int(palette["background"][1]),
-                    int(palette["background"][2]),
-                )
-            )
+            # Прозрачный слой: дашборд — это ОВЕРЛЕЙ поверх живой темы панели,
+            # поэтому фон не заливаем — иначе тема под ним не видна.  Рисуем
+            # только бары/текст/свечение, сквозь прозрачные места видна тема.
+            img = QImage(w, h, QImage.Format_ARGB32)
+            img.fill(Qt.GlobalColor.transparent)
             return img
         from PIL import ImageOps
 
@@ -311,13 +309,13 @@ class LinearDashboardRenderer:
     def _qimage_to_pil(img) -> Image.Image:
         from PySide6.QtGui import QImage
 
-        img = img.convertToFormat(QImage.Format_RGB888)
+        img = img.convertToFormat(QImage.Format_RGBA8888)
         w, h = img.width(), img.height()
         ptr = img.constBits()
         raw = ptr.tobytes() if hasattr(ptr, "tobytes") else bytes(ptr)
         stride = img.bytesPerLine()
         return Image.frombuffer(
-            IMAGE_MODE_RGB, (w, h), raw, PIL_RAW_MODE, IMAGE_MODE_RGB, stride, 1
+            IMAGE_MODE_RGBA, (w, h), raw, PIL_RAW_MODE, IMAGE_MODE_RGBA, stride, 1
         )
 
     def _paint_text_pil(self, img: Image.Image, specs: list[dict],
@@ -394,7 +392,7 @@ class LinearDashboardRenderer:
         ).point(lambda v: int(v * min(1.0, max(0.0, strength))))
         glow = Image.new(IMAGE_MODE_RGBA, (box_width, box_height), (*focus_color, LUMINANCE_MIN))
         glow.putalpha(outward_alpha)
-        img.paste(glow.convert(IMAGE_MODE_RGB), (box_left, box_top), outward_alpha)
+        img.paste(glow, (box_left, box_top), outward_alpha)
 
     @staticmethod
     def _paint_bar(p, rect, fill_frac: float, color, dim: float) -> None:

@@ -64,7 +64,8 @@ class BaseLayoutManager:
         edge_margin: float = 14.0,
         gap_min: float = 8.0,
         gap_max: float = 28.0,
-        gap_ratio: float = 0.2,
+        # Доля слота как зазор между барами (~0.4 см при 6 барах на 1920x440, ~70 px/см).
+        gap_ratio: float = 0.38,
         selection_scale: float = 1.22,
         min_slot: float = 8.0,
     ) -> None:
