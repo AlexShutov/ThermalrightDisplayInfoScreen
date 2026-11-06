@@ -264,7 +264,7 @@ class LinearDashboardRenderer:
         color,
         focus_color,
     ) -> None:
-        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtCore import QRectF
         from PySide6.QtGui import QBrush, QColor, QLinearGradient
 
         color = QColor(*color)
@@ -274,23 +274,22 @@ class LinearDashboardRenderer:
         track = QRectF(left, top, length, t)
         fill = QRectF(left, top, length * max(0.0, min(fr, 1.0)), t)
 
-        # Soft under-glow instead of a black drop shadow.  On a dark/black
-        # backdrop a black shadow is invisible, so the bar is floated with a
-        # colour glow: the bar's own accent colour when idle, blending to the
-        # green focus colour when selected (the haze a focused bar casts).
-        glow = QColor(*focus_color) if f > 0.0 else QColor(color)
-        p.setPen(Qt.NoPen)
-        for spread, alpha in ((0.0, 42), (6, 26), (12, 15), (18, 7)):
-            c = QColor(glow)
-            c.setAlpha(alpha)
-            p.setBrush(c)
-            x = left - spread
-            y = top - spread + 7
-            p.drawRoundedRect(
-                QRectF(x, y, length + 2 * spread, t + 2 * spread),
-                (t + 2 * spread) / 2.0,
-                (t + 2 * spread) / 2.0,
-            )
+        # Soft under-glow instead of a black drop shadow: on a dark/black
+        # backdrop a black shadow is invisible, so the bar floats on a bounded
+        # colour bloom just below its bottom edge — the bar's own accent colour
+        # when idle, blending to the green focus colour when selected.
+        focus = f > 0.0
+        glow_color = focus_color if focus else (color.red(), color.green(), color.blue())
+        self._under_glow(
+            p,
+            track,
+            glow_color,
+            t,
+            f if focus else 0.45,
+            bloom_px=28.0 if focus else 12.0,
+            alpha_base=140 if focus else 38,
+            seam_alpha=235 if focus else 0,
+        )
 
         # Backdrop track (low-alpha unfilled band).
         bcol = QColor(color)
@@ -308,51 +307,53 @@ class LinearDashboardRenderer:
             p.setBrush(QBrush(g))
             p.drawRoundedRect(fill, radius, radius)
 
-        # Selection: green light blooming from below the filled band, faded by
-        # focus level.
-        if f > 0.0 and fill.width() > 0:
-            self._paint_glow(p, fill, focus_color, t, f)
+        # Selection: green under-glow + bright seam are already drawn by the
+        # focus branch of the glow above (focus -> green, larger bloom, seam).
 
     @staticmethod
-    def _paint_glow(p, rect, focus_color, t: float, f: float) -> None:
-        """Green light blooming from BELOW the focused bar's filled band.
+    def _under_glow(p, rect, color, t: float, strength: float, *,
+                    bloom_px: float = 16.0, alpha_base: int = 30,
+                    seam_alpha: int = 0) -> None:
+        """Soft, bounded light blooming DOWNWARD from ``rect``'s bottom edge.
 
-        A set of widening, fading pill bands tucked under the bar's bottom edge
-        act as a soft light source underneath; a thin bright strip hugs the
-        lower seam.  Faded with the focus level; driven by the focus colour.
+        Thin horizontal layers drop a small ``bloom_px`` below the bar, narrowing
+        and fading with depth, and (when ``seam_alpha`` is set) a thin bright
+        strip hugs the lower edge.  ``strength`` (0..1) scales the alpha so the
+        glow fades in/out with the focus level.  Sized small on purpose — it must
+        read as a light cast under the bar, not a blob that swallows the bar.
         """
         from PySide6.QtCore import QRectF, Qt
         from PySide6.QtGui import QColor
 
-        fc = QColor(*focus_color)
+        c0 = QColor(*color)
         bottom = rect.bottom()
-        center_x = rect.center().x()
-        half = rect.width() / 2.0
+        cx = rect.center().x()
+        hw0 = rect.width() / 2.0
         p.setPen(Qt.NoPen)
-        # Bigger/faint bands first so the small bright one paints on top,
-        # producing a bright seam that decays downward.
-        for grow, alpha in ((6.6, 11), (5.0, 22), (3.6, 38), (2.4, 60)):
-            c = QColor(fc)
-            c.setAlpha(int(alpha * f))
+        layers = 9
+        for i in range(layers):
+            depth = 2.0 + i * (bloom_px / layers)
+            grow = 16.0 - i * (16.0 / (layers + 1))
+            c = QColor(c0)
+            c.setAlpha(int(alpha_base * strength * (1.0 - i / (layers + 1))))
             p.setBrush(c)
-            hw = half + t * 0.35 * (grow - 1.0)
-            band = QRectF(
-                center_x - hw,
-                bottom - t * 0.08,
-                2.0 * hw,
-                t * grow,
+            lh = 3.0
+            w = 2.0 * (hw0 + grow)
+            p.drawRoundedRect(
+                QRectF(cx - hw0 - grow, bottom + depth, w, lh),
+                lh / 2.0,
+                lh / 2.0,
             )
-            p.drawRoundedRect(band, band.height() / 2.0, band.height() / 2.0)
-        # Bright core strip hugging the lower edge (the "lit" seam).
-        core = max(1.5, t * 0.05)
-        c = QColor(fc)
-        c.setAlpha(int(220 * f))
-        p.setBrush(c)
-        p.drawRoundedRect(
-            QRectF(rect.left(), bottom, rect.width(), core),
-            core / 2.0,
-            core / 2.0,
-        )
+        if seam_alpha > 0:
+            core = max(1.2, t * 0.04)
+            c = QColor(c0)
+            c.setAlpha(int(seam_alpha * strength))
+            p.setBrush(c)
+            p.drawRoundedRect(
+                QRectF(rect.left(), bottom, rect.width(), core),
+                core / 2.0,
+                core / 2.0,
+            )
 
     @staticmethod
     def _qimage_to_pil(img) -> Image.Image:
