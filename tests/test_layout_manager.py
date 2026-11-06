@@ -54,39 +54,65 @@ def test_selection_grows_focused_bar_without_shrinking_others():
 def test_selection_top_selected_keeps_2mm():
     lm = SelectionLayoutManager()
     r = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    assert abs(r[0].y - EDGE) < 0.6  # ~2 mm from the top edge
+    assert r[0].y >= EDGE - 0.6  # keeps at least ~2 mm from the top edge
     assert r[0].y >= 0
 
 
 def test_selection_bottom_selected_keeps_2mm():
     lm = SelectionLayoutManager()
     r = lm.measure(W, H, 6, focus=[0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
-    assert abs((H - (r[5].y + r[5].height)) - EDGE) < 0.6
+    assert (H - (r[5].y + r[5].height)) >= EDGE - 0.6
     assert r[5].y + r[5].height <= H
 
 
-def test_selection_no_overflow_and_stable_positions():
+def test_selection_no_overflow_and_stable_x_width():
     lm = SelectionLayoutManager()
     r = lm.measure(W, H, 6, focus=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
     for geo in r.geometry:
         assert geo.x >= 0 and geo.y >= 0
         assert geo.x + geo.width <= W + 1e-6
         assert geo.y + geo.height <= H + 1e-6
-    # centre-x / width are stable; only the focused bar's height changes.
-    allc = lm.measure(W, H, 6, focus=[0.5] * 6)
+    # x / width are stable across focus (only heights + gaps ease).
     r2 = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     for i in range(6):
         assert abs(r[i].x - r2[i].x) < 1e-6
         assert abs(r[i].width - r2[i].width) < 1e-6
 
 
-def test_selection_static_positions_across_focus():
-    # The top edge of the frame stays fixed; only heights ease (no jitter).
+def test_selection_gap_around_focused_is_tight():
+    # A gap next to the focused bar tightens to selection_gap (~0.3 mm).
     lm = SelectionLayoutManager()
-    r1 = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    r2 = lm.measure(W, H, 6, focus=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
-    for i in range(6):
-        assert abs(r1[i].y + r1[i].height / 2.0 - (r2[i].y + r2[i].height / 2.0)) < 1e-6
+    sel_gap = lm.selection_gap
+    general = _gap(lm)
+    r = lm.measure(W, H, 6, focus=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    g0 = r[1].y - (r[0].y + r[0].height)  # between bar0 and bar1 (next to focus)
+    g1 = r[2].y - (r[1].y + r[1].height)  # between bar1 and bar2 (next to focus)
+    g2 = r[3].y - (r[2].y + r[2].height)  # between bar2 and bar3 (far from focus)
+    assert abs(g0 - sel_gap) < 0.6
+    assert abs(g1 - sel_gap) < 0.6
+    assert abs(g2 - general) < 0.6
+
+
+def test_selection_gap_unfocused_is_general():
+    lm = SelectionLayoutManager()
+    general = _gap(lm)
+    r = lm.measure(W, H, 6, focus=[0.0] * 6)
+    for i in range(5):
+        g = r[i + 1].y - (r[i].y + r[i].height)
+        assert abs(g - general) < 1e-6
+
+
+def test_selection_crowded_never_grows_gap():
+    # With enough bars the dynamic gap collapses to 0; a tightened gap must not
+    # grow past the general gap (sel_gap > general_gap there), keeping margins.
+    lm = SelectionLayoutManager()
+    n = 50
+    r = lm.measure(W, H, n, focus=[0.0, 0.0, 0.0, 0.0, 1.0] + [0.0] * (n - 5))
+    assert r[0].y >= EDGE - 0.6
+    assert r[n - 1].y + r[n - 1].height <= H + 1e-6
+    for i in range(n - 1):
+        g = r[i + 1].y - (r[i].y + r[i].height)
+        assert g <= lm.gap_for(H, n) + 1e-6  # never grows past the general gap
 
 
 # -- dynamic gap -------------------------------------------------------------
