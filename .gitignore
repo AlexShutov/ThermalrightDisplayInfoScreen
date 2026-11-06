@@ -20,6 +20,9 @@ venv/
 # Local test artifacts
 test-frame.png
 
+# Manager bridge runtime state (atomic seq bridge; regenerated on each run)
+manager_state.json
+
 # theme_reviews runtime data (downloaded media, generated DB, personal state)
 theme_reviews/themes/
 theme_reviews/themes.db*
