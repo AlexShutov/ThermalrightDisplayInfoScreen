@@ -10,13 +10,21 @@ only draws at the returned rects.  The measured geometry is always constant (eve
 bar the same height, the same uniform gap) regardless of selection; the selection
 layout (``is_selection_enabled``) is a *render-side* effect: the non-selected bars are
 dimmed, the selected bar grows in thickness, is pushed onto the foreground through
-the overlay z-order, and gets a green glow.  Bars are painted with a ``QPainter`` in
-increasing z-order (dimmed neighbours first, the selected bar last on top), and the
-glow is a smooth gaussian halo that radiates only OUTWARD from the selected bar — the
-silhouette is blurred and then carved back to its own footprint so the light never
-tints the fill (fixes the old lopsided under-glow that was clipped to the bar).
+the overlay z-order, and gets a green glow.  Selection changes TOGETHER WITH the data:
+each new data window (a change in setup/values/palette) alternates "every other time"
+— one window highlights a random bar, the next skips — and the highlight is held for
+the whole window (~5 s) instead of blipping.  While no bar is highlighted every gauge
+is at full brightness, so the indicators are always visible.  Bars are painted with a
+``QPainter`` in increasing z-order (dimmed neighbours first, the selected bar last on
+top), and the glow is a smooth gaussian halo that radiates only OUTWARD from the
+selected bar — the silhouette is blurred and then carved back to its own footprint so
+the light never tints the fill (fixes the old lopsided under-glow that was clipped to
+the bar).
 
-Both the selection (focus) and the value (progress) transitions are eased over time.
+The value (progress) transition runs from the previous value to the new one in
+``VALUE_TWEEN_S`` (0.3 s) — the bar "runs" to its new state quickly, then holds it
+for the rest of the ~5 s data window; the selection is keyed to the data change
+itself, so it moves in step with the values.
 Rendering paints the bars into a standalone ``QImage`` with a ``QPainter`` — no
 ``QApplication`` and no ``QGraphicsScene`` — then hands the frame to Pillow for the
 label/value text.  QImage painting is reentrant and does not touch the GUI, so the
@@ -27,7 +35,8 @@ imported lazily, so importing this module (and ``hardwarescreen``) does not requ
 from __future__ import annotations
 
 import os
-from math import exp
+import random
+import time
 
 from PIL import Image
 
@@ -37,13 +46,21 @@ from .layout import BaseLayoutManager, SelectionLayoutManager
 _LF = None
 
 
+def _fallback_ease_out_cubic(t: float) -> float:
+    """Кубическое ease-out, если сабмодуль ``activity_linear_indicator`` недоступен."""
+    return 1.0 - (1.0 - t) ** 3
+
+
 def _ensure_qt():
     """Lazily import the focus easing (no QApplication needed)."""
     global _LF
     if _LF is None:
-        from activity_linear_indicator.linear_focus import ease_out_cubic
+        try:
+            from activity_linear_indicator.linear_focus import ease_out_cubic
 
-        _LF = ease_out_cubic
+            _LF = ease_out_cubic
+        except ImportError:
+            _LF = _fallback_ease_out_cubic
     return _LF
 
 
@@ -70,7 +87,7 @@ def _pil_text(d, s: str, x: int, y: int, size=None,
 
 
 class LinearDashboardRenderer:
-    """Stateful offscreen renderer: eases focus (selection) and progress (value)."""
+    """Stateful offscreen renderer: eases progress (value) and pulses a random selection."""
 
     def __init__(
         self,
@@ -78,24 +95,38 @@ class LinearDashboardRenderer:
         *,
         background=None,
         fps: float = 15.0,
-        focus_cycle_s: float = 2.0,
-        focus_transition_s: float = 0.6,
-        value_tween_s: float = 0.6,
+        value_tween_s: float | None = None,
+        selection_transition_s: float | None = None,
+        rng: random.Random | None = None,
         layout: BaseLayoutManager | None = None,
     ) -> None:
         self._ease = _ensure_qt()
         self._size: tuple[int, int] = (int(size[0]), int(size[1]))
         self._background = background
         self._fps = fps
-        self._cycle = focus_cycle_s
-        self._ftrans = focus_transition_s
-        self._vtween = value_tween_s
+        # Константы заданы в конце файла, поэтому дефолты разрешаем здесь
+        # (в сигнатуре имена констант ещё не объявлены на этапе определения класса).
+        self._vtween = VALUE_TWEEN_S if value_tween_s is None else value_tween_s
+        self._selection_transition_s = (
+            SELECTION_TRANSITION_S if selection_transition_s is None else selection_transition_s
+        )
+        self._rng = rng if rng is not None else random.Random()
         self._layout = layout if layout is not None else SelectionLayoutManager()
         self._ids: list[str] = []
         self._anim_t = 0.0
         self._anim_step = 1.0 / max(1.0, fps)
+        # Значение бара: текущее, стартовое (в момент смены цели) и цель + время.
         self._progress: list[float] = []
-        self._last_time: dict[int, float] = {}
+        self._progress_from: list[float] = []
+        self._progress_target: list[float] = []
+        self._progress_start: list[float] = []
+        # Выбор меняется вместе со сменой данных (через раз) и держится всё окно
+        # данных (~5 с), а не мигает на собственном таймере.
+        self._sel_index: int | None = None
+        self._sel_should_select = True
+        self._sel_window_start = 0.0
+        self._sel_window_is_select = False
+        self._last_content_signature: object | None = None
 
     def __call__(
         self,
@@ -143,24 +174,34 @@ class LinearDashboardRenderer:
     ) -> bytes:
         """Render one eased frame and return raw RGB bytes (``w*h*3``)."""
         self._size = (int(size[0]), int(size[1]))
-        # Advance the animation clock by one step per RENDER, not per wall-clock
-        # tick: the caller re-renders only on data change (+keepalive), so a frame
-        # stays byte-identical between changes and trcc never floods the panel
-        # with a new (churning) frame every tick.  This keeps the dashboard
-        # reactive (AGENTS) while still easing the selection/value on change.
+        # Advance the value-easing clock by one step per RENDER: trcc re-renders
+        # at a capped cadence (source.fps) or on a real change, so the value tween
+        # proceeds frame-by-frame and never overruns the panel's ~18 fps budget.
+        # The random selection below deliberately uses wall-clock instead, so it
+        # is independent of how often the values change.
         self._anim_t += self._anim_step
         now = self._anim_t
-        t = self._anim_t
         pal = _palette(palette)
         specs = self._specs(setup or [], values or {}, pal)
         ids = [s["id"] for s in specs]
         if ids != self._ids:
             self._ids = ids
             self._progress = [0.0] * len(specs)
-            self._last_time = {}
+            self._progress_from = [0.0] * len(specs)
+            self._progress_target = [0.0] * len(specs)
+            self._progress_start = [0.0] * len(specs)
 
         n = len(specs)
-        focus = [self._focus_factor(t, i, n) for i in range(n)]
+        # Выбор меняется ВМЕСТЕ со сменой данных: каждое новое окно (сигнатура
+        # setup/values/palette) чередует select/skip и держит выделение до следующего
+        # окна (~5 с), а не мигает на собственном таймере.  Значения при этом «добегают»
+        # до цели за ``_vtween`` (0.3 с) и держатся до следующего окна данных.
+        content_signature = self._content_signature(setup or [], values or {}, palette or {})
+        selection_now = time.monotonic()
+        if content_signature != self._last_content_signature:
+            self._last_content_signature = content_signature
+            self._advance_selection(selection_now, n)
+        focus = self._selection_focus(selection_now, n)
         # The measured geometry is always constant (equal height + gap); selection
         # is a render-side effect (dim the others, grow + foreground the selected).
         layout = self._layout.measure(
@@ -179,6 +220,7 @@ class LinearDashboardRenderer:
         img = self._make_image(pal, background)
         selection_on = self._layout.is_selection_enabled
         active = self._active_index(focus, selection_on)
+        selection_strength = max(focus) if (selection_on and focus) else 0.0
         focus_color = _focus_color()
 
         # Grow the selected bar around its centre; non-selected bars keep the
@@ -208,8 +250,7 @@ class LinearDashboardRenderer:
         p.setRenderHint(QPainter.Antialiasing, True)
         for i in order:
             f = focus[i] if selection_on else 0.0
-            # Невыделенные бары (f=0) гаснут в затемнение, выделенный (f=1) — яркий.
-            dim = (DIM_MIN + DIM_RANGE * f) if selection_on else 1.0
+            dim = self._selection_dim(f, selection_on, selection_strength)
             self._paint_bar(p, rects[i], progress[i], specs[i]["color"], dim)
         p.end()
 
@@ -286,12 +327,12 @@ class LinearDashboardRenderer:
         from PIL import ImageDraw
 
         d = ImageDraw.Draw(img)
+        focus_values = focus if focus is not None else []
+        selection_on = focus is not None
+        selection_strength = max(focus_values) if focus_values else 0.0
         for idx, (spec, geo) in enumerate(zip(specs, layout.geometry, strict=True)):
-            if focus is not None:
-                # Невыделенные подписи гаснут вместе с баром, выделенная — яркая.
-                brightness = DIM_MIN + DIM_RANGE * (focus[idx] if idx < len(focus) else 0.0)
-            else:
-                brightness = 1.0
+            focus_value = focus_values[idx] if idx < len(focus_values) else 0.0
+            brightness = self._selection_dim(focus_value, selection_on, selection_strength)
             # Приглушаем подпись к фону, чтобы она гасла вместе с баром.
             text_color_rgb = (
                 int(round(text_color[0] * brightness + bg[0] * (1.0 - brightness))),
@@ -391,33 +432,93 @@ class LinearDashboardRenderer:
         peak = max(focus)
         return focus.index(peak) if peak > FOCUS_EPSILON else None
 
-    def _focus_factor(self, t: float, i: int, n: int) -> float:
-        if n == 0:
-            return 0.0
-        cycle = self._cycle
-        ts = self._ftrans
-        period = cycle * n
-        seg = (t - i * cycle) % period
-        if seg <= ts:
-            return self._ease(seg / ts)
-        if seg <= cycle:
-            return 1.0
-        if seg <= cycle + ts:
-            return 1.0 - self._ease((seg - cycle) / ts)
-        return 0.0
+    @staticmethod
+    def _content_signature(setup: list[dict], values: dict, palette: dict) -> object:
+        """Отпечаток отображаемого содержимого — его смена = новое окно данных."""
+        return (
+            tuple((g.get("id"), g.get("label"), g.get("min"), g.get("max"),
+                   g.get("unit")) for g in (setup or [])),
+            tuple(sorted((values or {}).items())),
+            tuple(sorted((palette or {}).items())),
+        )
+
+    def _advance_selection(self, now: float, count: int) -> None:
+        """Открывает новое окно данных: «через раз» выбрать случайный бар или пропустить."""
+        if count == 0 or not self._layout.is_selection_enabled:
+            self._sel_index = None
+            return
+        # Через раз: одно окно выделяет случайный бар, следующее — нет.
+        if self._sel_should_select:
+            self._sel_index = self._rng.randrange(count)
+            self._sel_window_is_select = True
+        else:
+            self._sel_window_is_select = False  # предыдущий пульс гаснет в этом окне
+        self._sel_window_start = now
+        self._sel_should_select = not self._sel_should_select
+
+    def _selection_focus(self, now: float, count: int) -> list[float]:
+        """Яркость/фокус выделения в текущем окне данных.
+
+        Если окно «выбрано» — случайный бар плавно нарастает и держится (фокус 1.0)
+        до конца окна; если окно «пропуск» — предыдущий пульс плавно гаснет и
+        остаётся выключенным.  Так выделение меняется вместе с данными и держится
+        весь показ (~5 с), а не мигает.
+        """
+        focus = [0.0] * count
+        if count == 0 or not self._layout.is_selection_enabled or self._sel_index is None:
+            return focus
+        if self._sel_index >= count:
+            # Баров стало меньше под активным пульсом — убираем его (иначе OOB).
+            self._sel_index = None
+            self._sel_window_is_select = False
+            return focus
+        transition = max(FOCUS_EPSILON, self._selection_transition_s)
+        elapsed = now - self._sel_window_start
+        if self._sel_window_is_select:
+            focus[self._sel_index] = (
+                self._ease(elapsed / transition) if elapsed <= transition else 1.0
+            )
+        else:
+            focus[self._sel_index] = (
+                1.0 - self._ease(elapsed / transition) if elapsed <= transition else 0.0
+            )
+        return focus
+
+    def _selection_dim(self, focus_value: float, selection_on: bool,
+                       selection_strength: float) -> float:
+        """Яркость бара/подписи: при idle полная, при пульсе — затемняется всё,
+        кроме подсвеченного бара."""
+        if selection_on and selection_strength > FOCUS_EPSILON:
+            if focus_value > FOCUS_EPSILON:
+                return 1.0
+            return 1.0 - DIM_RANGE * selection_strength
+        return 1.0
 
     def _eased_progress(self, idx: int, target: float, now: float) -> float:
+        """Возвращает текущее значение бара.
+
+        Бар «добегает» от предыдущего значения до цели за ``_vtween`` секунд (0.3 с):
+        при смене цели фиксируется стартовое значение и время, идёт ease-out, а после
+        достижения цели значение держится, пока не придёт следующее окно данных.
+        """
         if idx >= len(self._progress):
-            self._progress.extend([0.0] * (idx + 1 - len(self._progress)))
-        prev = self._progress[idx]
+            fill = idx + 1 - len(self._progress)
+            self._progress.extend([0.0] * fill)
+            self._progress_from.extend([0.0] * fill)
+            self._progress_target.extend([0.0] * fill)
+            self._progress_start.extend([0.0] * fill)
         if self._vtween <= 0:
             value = target
         else:
-            dt = now - self._last_time.get(idx, now)
-            alpha = 1.0 - exp(-max(0.0, dt) / self._vtween)
-            value = prev + (target - prev) * alpha
+            if target != self._progress_target[idx]:
+                self._progress_from[idx] = self._progress[idx]
+                self._progress_target[idx] = target
+                self._progress_start[idx] = now
+            frac = min(1.0, max(0.0, (now - self._progress_start[idx]) / self._vtween))
+            value = self._progress_from[idx] + (
+                self._progress_target[idx] - self._progress_from[idx]
+            ) * self._ease(frac)
         self._progress[idx] = value
-        self._last_time[idx] = now
         return value
 
     def close(self) -> None:
@@ -453,9 +554,18 @@ GRADIENT_EDGE_HI = 0.12
 GRADIENT_EDGE_DARK = 0.85
 GRADIENT_END = 1.0
 
+# Скорость анимации значения: бар «добегает» от прежнего значения до нового за
+# 300 мс (окно данных ~5 с, но движение полоски — быстрым, а не 5-секундным).
+VALUE_TWEEN_S = 0.3
+
+# Выбор «через раз», меняется вместе со сменой данных (событие по сигнатуре):
+# одно окно выделяет случайный бар, следующее — пропускает; выделение держится
+# всё окно (~5 с), не мигает.
+SELECTION_TRANSITION_S = 0.6  # время нарастания/затухания выделения в начале окна
+
 # Выделение (selection) — затемнение и z-порядок.
-DIM_MIN = 0.35               # яркость полностью невыделенного бара
-DIM_RANGE = 0.65             # диапазон роста яркости к выделенному
+DIM_MIN = 0.35               # яркость полностью затемнённого (невыделенного) бара
+DIM_RANGE = 1.0 - DIM_MIN    # насколько гаснет невыделенный бар при активном пульсе
 Z_FOREGROUND = 100.0         # выделенный бар всегда поверх
 Z_BASE = 1.0                 # остальные бары в порядке фокуса
 Z_FOCUS_WEIGHT = 2.0         # вес фокуса при сортировке

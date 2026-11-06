@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: MIT
+"""Тесты выбора «через раз» в Qt linear-индикаторе.
+
+Выбор меняется вместе со сменой данных: ``_advance_selection`` открывает новое окно
+(чередуя выбрать случайный бар / пропустить), а ``_selection_focus`` держит выделение
+всё окно (~5 с), не мигая.  Проверяем чередование, удержание, случайность позиции и
+выключение выбора при статичной раскладке (``StaticLayoutManager``).
+"""
+from __future__ import annotations
+
+import random
+
+from hardwarescreen.adapter.layout import StaticLayoutManager
+from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer
+
+BARS = 6
+
+
+def test_alternating_selection_selects_every_other_window():
+    """Через раз: окна чередуются выбор/пропуск ровно по очереди."""
+    renderer = LinearDashboardRenderer((1920, 440), rng=random.Random(3))
+    flags = []
+    for _ in range(8):
+        renderer._advance_selection(0.0, BARS)
+        flags.append(renderer._sel_window_is_select)
+    assert flags == [True, False, True, False, True, False, True, False]
+
+
+def test_selection_holds_through_the_window():
+    """Выделение держится всё окно (не мигает): полный фокус на 1с/2с/4с."""
+    renderer = LinearDashboardRenderer((1920, 440), rng=random.Random(5))
+    now = 0.0
+    renderer._advance_selection(now, BARS)
+    index = renderer._sel_index
+    assert index is not None and renderer._sel_window_is_select is True
+    for sample_at in (1.0, 2.0, 4.0):
+        focus = renderer._selection_focus(now + sample_at, BARS)
+        assert focus[index] == 1.0, (sample_at, focus[index])
+    # В окне-пропуске предыдущий пульс гаснет к нулю и остаётся выключенным.
+    window_plus = 5.0
+    renderer._advance_selection(now + window_plus, BARS)
+    assert renderer._sel_window_is_select is False
+    focus = renderer._selection_focus(now + window_plus + 3.0, BARS)
+    assert focus[index] == 0.0, focus[index]
+
+
+def test_selection_picks_various_positions():
+    """Позиция выбранного бара случайна — не один и тот же бар."""
+    renderer = LinearDashboardRenderer((1920, 440), rng=random.Random(7))
+    now = 0.0
+    picks: set[int] = set()
+    for _ in range(60):
+        renderer._advance_selection(now, BARS)
+        if renderer._sel_window_is_select and renderer._sel_index is not None:
+            picks.add(renderer._sel_index)
+    assert len(picks) >= 3, picks
+
+
+def test_selection_off_for_static_layout():
+    """При StaticLayoutManager фокус всегда нулевой — индикаторы видны в полную яркость."""
+    renderer = LinearDashboardRenderer(
+        (1920, 440), layout=StaticLayoutManager(), rng=random.Random(5)
+    )
+    renderer._advance_selection(0.0, BARS)
+    assert renderer._sel_index is None
+    for sample_at in (0.0, 1.0, 4.0):
+        focus = renderer._selection_focus(0.0 + sample_at, BARS)
+        assert all(v == 0.0 for v in focus)
+
+
+def test_content_signature_changes_on_value_update():
+    """Сигнатура содержимого меняется при смене значений — триггер нового окна."""
+    sig_a = LinearDashboardRenderer._content_signature(
+        [{"id": "cpu", "label": "CPU", "min": 0, "max": 100, "unit": "%"}],
+        {"cpu": 10},
+        {"accent": "#00c85a"},
+    )
+    sig_b = LinearDashboardRenderer._content_signature(
+        [{"id": "cpu", "label": "CPU", "min": 0, "max": 100, "unit": "%"}],
+        {"cpu": 90},
+        {"accent": "#00c85a"},
+    )
+    assert sig_a != sig_b
+
+
+def test_value_tween_runs_to_target_in_three_hundred_ms():
+    """Бар «добегает» до нового значения за 300 мс, а не за 5 с."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    assert renderer._vtween == 0.3
+    # стартовое 0, цель 0.8; в 0.1 с ещё в пути, в 0.3 с уже на цели и держится.
+    renderer._eased_progress(0, 0.8, 0.0)
+    assert renderer._eased_progress(0, 0.8, 0.1) < 0.8
+    assert abs(renderer._eased_progress(0, 0.8, 0.3) - 0.8) < 1e-6
+    assert abs(renderer._eased_progress(0, 0.8, 1.0) - 0.8) < 1e-6

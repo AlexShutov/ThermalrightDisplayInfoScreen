@@ -1,6 +1,6 @@
 # Конфиг источника данных-заглушки (YAML-первичный). Переопределять через `hardwarescreen-stubdata --config`.
 manager_url: http://127.0.0.1:8123
-poll_s: 1.0
+poll_s: 5.0
 # seed: 42            # раскомментируй для воспроизводимой последовательности
 num_gauges: 6
 switch_probability: 0.02
