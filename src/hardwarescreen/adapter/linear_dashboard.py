@@ -202,15 +202,20 @@ class LinearDashboardRenderer:
         p.setRenderHint(QPainter.Antialiasing, True)
         for i in order:
             f = focus[i] if selection_on else 0.0
-            # Non-selected bars (f=0) fade toward dim; the selected one (f=1) is bright.
+            # Невыделенные бары (f=0) гаснут в затемнение, выделенный (f=1) — яркий.
             dim = (0.35 + 0.65 * f) if selection_on else 1.0
-            if selection_on and f > 0.0:
-                # Green glow/shadow cast around the selected bar (behind it).
-                self._paint_glow(p, rects[i], focus_color, f)
             self._paint_bar(p, rects[i], progress[i], specs[i]["color"], dim)
         p.end()
 
         pil = self._qimage_to_pil(img)
+        # Плавная зелёная тень ТОЛЬКО наружу: гауссово-размытый силуэт выделенного
+        # бара, из которого вырезан собственный footprint, — свет расходится ровно
+        # вокруг бара и не тонирует сам бар.
+        if selection_on:
+            for i in range(n):
+                f = focus[i] if i < len(focus) else 0.0
+                if f > 0.0:
+                    self._paint_glow_pil(pil, rects[i], focus_color, f)
         if specs:
             self._paint_text_pil(
                 pil, specs, layout, pal["text"],
@@ -292,35 +297,43 @@ class LinearDashboardRenderer:
                       cy - 16, size=26, fill=col)
 
     @staticmethod
-    def _paint_glow(p, rect, focus_color, strength: float) -> None:
-        """Symmetric green glow/shadow around the whole selected bar (not broken).
+    def _paint_glow_pil(img, rect, focus_color, strength: float) -> None:
+        """Накладывает плавную зелёную тень ТОЛЬКО наружу ``rect`` на ``img``.
 
-        Layered rounded-rect strokes expand outward from the bar and fade, so the
-        light blooms evenly around every edge (no lopsided downward under-glow and
-        not clipped to the filled part).  ``strength`` (0..1) = focus level.
+        Рисует силуэт бара (скруглённый прямоугольник), размывает его гауссовым
+        блюром (настоящий плавный градиент, без дискретных колец), затем вырезает
+        из размытой маски собственный footprint бара, чтобы свет расходился только
+        вне бара и не тонировал заливку.  ``strength`` (0..1) = уровень фокуса.
         """
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QColor, QPen
+        from PIL import Image, ImageDraw, ImageFilter
 
-        c0 = QColor(*focus_color)
-        radius = max(2.0, rect.height() / 2.0)
-        core = max(2.0, rect.height() * 0.05)
-        p.setBrush(Qt.NoBrush)
-        # Soft halo: wide + faint -> narrow + bright.
-        for mult, alpha in ((11.0, 22), (7.0, 48), (4.2, 84), (2.4, 122)):
-            c = QColor(c0)
-            c.setAlpha(int(alpha * strength))
-            pen = QPen(c, core * mult)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            p.setPen(pen)
-            p.drawRoundedRect(rect, radius, radius)
-        # Bright core edge.
-        core_pen = QPen(QColor(c0.red(), c0.green(), c0.blue(), int(220 * strength)), core)
-        core_pen.setCapStyle(Qt.RoundCap)
-        core_pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(core_pen)
-        p.drawRoundedRect(rect, radius, radius)
+        left, t = int(rect.x()), int(rect.y())
+        w, h = int(rect.width()), int(rect.height())
+        if w <= 0 or h <= 0:
+            return
+        margin = 48
+        bx0 = max(0, left - margin)
+        by0 = max(0, t - margin)
+        bx1 = min(img.width, left + w + margin)
+        by1 = min(img.height, t + h + margin)
+        bw = bx1 - bx0
+        bh = by1 - by0
+        if bw <= 0 or bh <= 0:
+            return
+        radius = max(2.0, h / 2.0)
+        sil = Image.new("L", (bw, bh), 0)
+        ImageDraw.Draw(sil).rounded_rectangle(
+            [left - bx0, t - by0, left - bx0 + w, t - by0 + h], radius=radius, fill=255
+        )
+        blurred = sil.filter(ImageFilter.GaussianBlur(16))
+        # 1 - footprint: тень равен нулю ровно там, где стоит бар (только наружу).
+        inv = sil.point(lambda v: 255 - v)
+        mask = Image.composite(
+            blurred, Image.new("L", (bw, bh), 0), inv
+        ).point(lambda v: int(v * min(1.0, max(0.0, strength))))
+        glow = Image.new("RGBA", (bw, bh), (*focus_color, 0))
+        glow.putalpha(mask)
+        img.paste(glow.convert("RGB"), (bx0, by0), mask)
 
     @staticmethod
     def _paint_bar(p, rect, fill_frac: float, color, dim: float) -> None:
