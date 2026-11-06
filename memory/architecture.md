@@ -1,115 +1,138 @@
-# architecture.md — Theme Manager decision record
+# architecture.md — протокол решения менеджера тем
 
-## Goal / scope
-A reusable **theme manager / SDK** on top of `trcc daemon` — NOT tied to one use (not only a car
-dashboard): the same toolset can drive other dashboards/adapters, e.g. a work display that warns
-about meetings. The JSON endpoints are deliberately generic so producers carry the domain, not the
-manager.
+## Цель / область
+Переиспользуемый **менеджер тем / SDK** поверх `trcc daemon` — НЕ привязан к одному сценарию
+(не только автомобильный дашборд): тот же инструментарий может вести другие дашборды/адаптеры,
+например рабочий экран, предупреждающий о встречах. JSON-эндпоинты намеренно обобщены, чтобы
+домен несли продюсеры, а не менеджер.
 
-## Relationship to existing `src/hardwarescreen/`
-- `src/hardwarescreen/` (thin client `hardwarescreen run` + `supervise` + `canvas`) stays separate; it is the
-  self-contained fallback (own LY transport, no trcc).
-- The new manager + Qt module run on top of `trcc daemon`. **USB is exclusive:** the device is held
-  by EITHER a thin client (`hardwarescreen run`) OR `trcc daemon` — never both. Running both -> trcc daemon
-  gets `Access denied`. The manager assumes `trcc daemon` owns the panel.
+## Отношение к существующему `src/hardwarescreen/`
+- `src/hardwarescreen/` (тонкий клиент `hardwarescreen run` + `supervise` + `canvas`) остаётся отдельным;
+  это самодостаточный фолбэк (свой LY-транспорт, без trcc).
+- Новые менеджер + Qt-модуль работают поверх `trcc daemon`. **USB эксклюзивен:** устройство держит
+  ЛИБО тонкий клиент (`hardwarescreen run`), ЛИБО `trcc daemon` — никогда оба. Запуск обоих -> trcc daemon
+  получает `Access denied`. Менеджер предполагает, что панелью владеет `trcc daemon`.
 
-## Structure
-Two planes. **Display plane** (host owns USB + panel): `manager` (HTTP service) + `trcc daemon`
-(plays the video theme) + a **Qt adapter module** drawing the dashboard *on top of* the theme.
-**Data plane** (any host on LAN): producer apps/daemons `POST` JSON to the manager. Merge stays local
-on the display host; a remote producer crashing never kills the dashboard (last state holds).
+## Структура
+Две плоскости. **Плоскость отображения** (хост владеет USB + панелью): `manager` (HTTP-сервис) +
+`trcc daemon` (играет видео-тему) + **модуль Qt-адаптера**, рисующий дашборд *поверх* темы.
+**Плоскость данных** (любой хост в LAN): приложения/демоны-продюсеры `POST`-ят JSON в менеджер.
+Слияние остаётся локальным на хосте отображения; падение удалённого продюсера никогда не убивает
+дашборд (последнее состояние держится).
 
-## Manager stack (choice)
-- Python + **FastAPI + uvicorn** (single worker, `loop="asyncio"`), **pydantic v2** for validation.
-- Rationale for 24/7: request-scoped state (no global accumulation -> no leak), one async worker
-  (no per-request thread -> no race), bounded request-body middleware (-> 413 instead of OOM),
-  timeouts on every outbound call, `systemd Restart=on-failure`.
-- Only latest state is retained (one dict replaced whole) — no growing queues -> no overflow.
+## Стек менеджера (выбор)
+- Python + **FastAPI + uvicorn** (один воркер, `loop="asyncio"`), **pydantic v2** для валидации.
+- Обоснование для 24/7: состояние в scope запроса (без глобального накопления -> без утечки), один
+  async-воркер (без потока на запрос -> без гонки), middleware на лимит тела запроса (-> 413 вместо OOM),
+  таймауты на каждый исходящий вызов, `systemd Restart=on-failure`.
+- Держится только последнее состояние (один dict заменяется целиком) — без растущих очередей -> без переполнения.
 
-## Bridge manager -> Qt module
-- Atomic state file with monotonic `seq` (temp + `os.replace`). Module polls, reacts to `seq` growth.
-  No IPC library. Stale detection via `seq`/`updated_at`. Prevents torn reads + backpressure.
+## Мост менеджер -> Qt-модуль
+- Атомарный файл состояния с монотонным `seq` (temp + `os.replace`). Модуль опрашивает, реагирует на
+  рост `seq`. Без IPC-библиотеки. Детект устаревания через `seq`/`updated_at`. Предотвращает разорванные
+  чтения + backpressure.
 
-## API contract (subject to change)
+## Контракт API (может меняться)
 - `POST /dashboard/setup` — `{ "gauges":[{"id","label","unit","min","max"}] }`
-- `POST /dashboard/update` — `{ "values":{...} }` (full or partial)
+- `POST /dashboard/update` — `{ "values":{...} }` (полностью или частично)
 - `POST /settings` — `{ "themes":{"day":id,"night":id}, "adapter":{"day":{palette},"night":{palette}} }`;
-  manager computes **active palette from current mode** (color names: background, panel, accent, text, muted).
-- `POST /theme` — `{ "mode":"day"|"night" }` (manual trigger), switches trcc theme + adapter style.
+  менеджер вычисляет **активную палитру из текущего режима** (имена цветов: background, panel, accent, text, muted).
+- `POST /theme` — `{ "mode":"day"|"night" }` (ручной триггер), переключает тему trcc + стиль адаптера.
 - `GET /health` — `{ "status","uptime_s","seq","mode" }`
-- Bridge state object: `{ "seq","mode","active_theme","palette","setup","values" }`
+- Объект состояния моста: `{ "seq","mode","active_theme","palette","setup","values" }`
 
-## Render lifecycle rule
-- No data -> `background.end(key)` (clean theme). Data present -> `background.show(key, source, fps)`.
-- Render reactively (on change); keepalive for the panel (~1.5-2 s).
+## Правило жизненного цикла рендеринга
+- Нет данных -> `background.end(key)` (чистая тема). Есть данные -> `background.show(key, source, fps)`.
+- Рендерить реактивно (на изменение); keepalive для панели (~1.5-2 с).
 
-## Composite choice
-- **Variant A: Qt adapter** — theme video plays as background, Qt draws overlay, frame handed to
-  `background`. Static-JPEG fallback is not the target (loses live cloud themes).
+## Выбор композита
+- **Вариант A: Qt-адаптер** — видео-тема играет как фон, Qt рисует оверлей, кадр отдаётся в
+  `background`. Статический JPEG-фолбэк не цель (теряет живые облачные темы).
 
-## Composite mechanism (verified from trcc source)
-- `host.background.show(key, FrameSource, fps)` makes the module's source the panel's background:
-  the App dispatches `StopVideo` (theme video STOPS), saves the choice, opens the module source, and a
-  `SourceDriver` (interval `1/fps`) runs `CaptureSourceFrame` -> `source.latest()` each tick,
-  compositing the theme's mask + metrics on top, and sends. (`app.py:571-584`, `services/source_driver.py`)
-- `host.background.end(key)` closes the source, stops the driver, and `PlayVideo(path)` resumes the
-  theme's own video. (`app.py:586-602`)
-- FrameSource port (`ports.py:2558`): `latest() -> RawFrame` ("CaptureNotReady" while starting,
-  `OSError` on permanent failure), `close()`; module draws on its own thread, keeps only newest.
-- Capabilities gate: module must declare a capability in `module.json` to reach `host.*`; undeclared -
-  `ModuleScope._need` raises (e.g. "Stub asked for 'panels' without declaring it").
-- Behaviors that matter for us: with `background.show` the module's source REPLACES the theme's video
-  as the background (video stops); the App puts the theme's mask + metrics on top. So "live theme video
-  under our overlay" is NOT what `background.show` gives by itself -- the module's FrameSource must
-  draw the composite, optionally decoding the theme MP4 (ffmpeg) as its base.
-- The supported lifecycle matches our plan: no data -> `background.end` (theme video plays); data -> 
-  `background.show` (our Qt dashboard becomes the background; theme mask/metrics composited on top).
-  If we want the theme video visible under the dashboard even in data-present mode, the module's
-  FrameSource re-decodes the theme MP4 as its base and draws the Qt overlay on top.
+## Механизм композита (проверено по исходникам trcc)
+- `host.background.show(key, FrameSource, fps)` делает источник модуля фоном панели: App диспатчит
+  `StopVideo` (видео-тема ОСТАНАВЛИВАЕТСЯ), сохраняет выбор, открывает источник модуля, а
+  `SourceDriver` (интервал `1/fps`) каждый тик гоняет `CaptureSourceFrame` -> `source.latest()`,
+  накладывая сверху маску + метрики темы, и шлёт. (`app.py:571-584`, `services/source_driver.py`)
+- `host.background.end(key)` закрывает источник, стопает драйвер, и `PlayVideo(path)` возобновляет
+  собственное видео темы. (`app.py:586-602`)
+- Порт FrameSource (`ports.py:2558`): `latest() -> RawFrame` ("CaptureNotReady" пока стартует,
+  `OSError` при необратимой ошибке), `close()`; модуль рисует в своём потоке, держит только новейшее.
+- Гейт по capability: модуль обязан объявить capability в `module.json`, чтобы получить `host.*`;
+  не объявил — `ModuleScope._need` бросает (напр. "Stub asked for 'panels' without declaring it").
+- Поведения, важные для нас: при `background.show` источник модуля ЗАМЕНЯЕТ видео-тему как фон
+  (видео стопается); App кладёт сверху маску + метрики темы. Так что "живое видео-темы под нашим
+  оверлеем" — это НЕ то, что `background.show` даёт сам по себе — FrameSource модуля должен рисовать
+  композит сам, опционально декодируя MP4 темы (ffmpeg) как свою базу.
+- Поддерживаемый жизненный цикл совпадает с нашим планом: нет данных -> `background.end` (видео-тема
+  играет); есть данные -> `background.show` (наш Qt-дашборд становится фоном; маска/метрики темы
+  сверху). Если хотим видеть видео-тему под дашбордом даже в режиме "есть данные", FrameSource модуля
+  пере-декодирует MP4 темы как базу и рисует Qt-оверлей сверху.
 
-## Adapter data / day-night style
-- Adapter reads bridge state (setup + values + palette), draws gauges. Day/night palette arrives via
-  `/settings` -> manager -> bridge; style switch without module restart.
-- Bind `127.0.0.1` locally; LAN bind + optional `Authorization: Bearer <token>` is a config option
-  (for future remote producers, e.g. Orange Pi 6 Plus POSTing over LAN).
+## Данные адаптера / стиль день-ночь
+- Адаптер читает состояние моста (setup + values + palette), рисует гейджи. Палитра день/ночь приходит
+  через `/settings` -> менеджер -> мост; смена стиля без рестарта модуля.
+- Биндиться локально на `127.0.0.1`; LAN-биндинг + опциональный `Authorization: Bearer <token>` — это
+  конфиг-опция (для будущих удалённых продюсеров, напр. Orange Pi 6 Plus POST-ит по LAN).
 
-## Stub data source
-- On start: `POST /dashboard/setup`, then random `update`s and random `/theme` mode switches.
-  Separate service; enough for development.
+## Источник данных-заглушки
+- На старте: `POST /dashboard/setup`, затем случайные `update`-ы и случайные переключения `/theme`.
+  Отдельный сервис; достаточно для разработки.
 
-## Testing (reused from trcc)
-Every phase is gated by its tests, run on a fake device — no hardware needed. Core logic is pure
-Python behind injectable ports; frameworks (Qt/FastAPI/trcc) are adapters only at the edges. Full
-strategy + concrete rules: `memory/testing.md`.
+## Тестирование (переиспользовано из trcc)
+Каждая фаза гейтится своими тестами на фейковом устройстве — железо не нужно. Ядровая логика — чистый
+Python за инжектируемыми портами; фреймворки (Qt/FastAPI/trcc) — только адаптеры на краях. Полная
+стратегия + конкретные правила: `memory/testing.md`.
 
-## Phase 0 — validated on hardware (macOS, Trofeo 11.3)
-- Module FrameSource cycle PROVEN: probe module (key `probe`, in `dev/trcc-module-probe/`)
-  `_enable` -> `host.background.show(key, source, 15.0)`. Verified in the daemon log:
+## Фаза 0 — подтверждена на железе (macOS, Trofeo 11.3)
+- Цикл FrameSource модуля ДОКАЗАН: пробный модуль (ключ `probe`, в `dev/trcc-module-probe/`)
+  `_enable` -> `host.background.show(key, source, 15.0)`. Проверено в логе демона:
   `show_source: 0416:5408 <- probe.pattern (probe, 15 fps)` -> `SourceDriver: every 67 ms`
   -> `probe: showing pattern on 0416:5408 (1920x440) at 15 fps`; `trcc status` -> `showing: the Probe module`.
-- `host.background.end(key)` restores the theme: `end_source` -> `probe: ended -> theme restored`
-  (`showing: the theme's background`). The probe is currently turned OFF (clean state).
-- **Robustness gap found:** module `_enable` can run BEFORE the panel is attached (at daemon startup
-  the device is still enumerating), so `host.panels.attached()` may be EMPTY and `background.show`
-  cannot run; our naive probe just warns and returns. The real adapter MUST defer `background.show`
-  until a panel is present -- subscribe to the panel-attach/`PanelChanged`-style event, or have the
-  MANAGER (which knows when it asked trcc to load a theme for the panel) signal the module when to show.
-- Composite (user chose option 1): theme video decodes (ffmpeg) as the module's base + Qt overlay on
-  top, served via the FrameSource. The probe uses a plain RGB24 pattern to prove the cycle; the
-  base-video decode + Qt overlay are the next refinement on this same seam.
+- `host.background.end(key)` возвращает тему: `end_source` -> `probe: ended -> theme restored`
+  (`showing: the theme's background`). Пробный модуль сейчас ВЫКЛЮЧЕН (чистое состояние).
+- **Найденный разрыв в надёжности:** `_enable` модуля может выполниться ДО подключения панели (на
+  старте демона устройство ещё перечисляется), поэтому `host.panels.attached()` может быть ПУСТЫМ, и
+  `background.show` не выполнится; наш наивный пробный модуль просто предупреждает и выходит.
+  Настоящий адаптер ОБЯЗАН откладывать `background.show` до появления панели — подписаться на событие
+  panel-attach/`PanelChanged`-типа, или пусть МЕНЕДЖЕР (который знает, когда просил trcc загрузить
+  тему для панели) сигналит модулю, когда показывать.
+- Композит (пользователь выбрал вариант 1): видео-тема декодируется (ffmpeg) как база модуля + Qt-оверлей
+  сверху, отдаётся через FrameSource. Пробный модуль использует простой RGB24-паттерн, чтобы доказать
+  цикл; декод базового видео + Qt-оверлей — следующее уточнение на этом же шве.
 
-## Open questions (NOT yet decided — a new session must treat these as open, not assumed)
-- **File layout:** *solved in Phase 1* — the manager is a new package **`src/manager/`** (console script `hardwarescreen-manager`), sharing the ports in `src/hardwarescreen/ports.py`; `manager` -> `hardwarescreen.ports` is a one-way import (no cycle). setuptools `where=["src"]` discovers both. FastAPI/uvicorn/pydantic are now **base runtime deps** (manager is a first-class component), not an optional extra.
-- **Manager -> trcc mechanism:** drive `trcc daemon` via its CLI triggers (`trcc display play d037`) or via trcc's own FastAPI REST API (which dispatches Commands on the App). Not chosen.
-- **Qt render details:** QPainter widgets vs QML, DPI/devicePixelRatio for the 1920x440 canvas, where the Qt module lives (own GPL repo vs `dev/`). Not chosen.
-- **How the module gets its composited frame into the panel while the theme plays** — exact FrameSource/background protocol to confirm in Phase 0. Investigate trcc internals, don't assume.
+## Открытые вопросы (НЕ решены — новая сессия обязана считать их открытыми, не предположенными)
+- **Раскладка файлов:** *решено в Фазе 1* — менеджер это новый пакет **`src/manager/`** (console script
+  `hardwarescreen-manager`), разделяющий порты в `src/hardwarescreen/ports.py`; `manager` ->
+  `hardwarescreen.ports` — однонаправленный импорт (без цикла). setuptools `where=["src"]` находит оба.
+  FastAPI/uvicorn/pydantic теперь **базовые runtime-зависимости** (менеджер — компонент первого класса),
+  а не опциональный экстра.
+- **Механизм менеджер -> trcc:** вести `trcc daemon` через его CLI-триггеры (`trcc display play d037`)
+  или через собственный FastAPI REST API trcc (который диспатчит Commands на App). Не выбрано.
+- **Детали Qt-рендера:** QPainter-виджеты vs QML, DPI/devicePixelRatio для канваса 1920x440, где живёт
+  Qt-модуль (свой GPL-репо vs `dev/`). Не выбрано.
+- **Как модуль отдаёт свой композитный кадр в панель, пока играет тема** — точный протокол
+  FrameSource/background подтвердить в Фазе 0. Исследовать внутренности trcc, не предполагать.
 
-## Phase 1 — implemented (verified headless)
-- `src/manager/` FastAPI + uvicorn (single async worker, `loop="asyncio"`), pydantic v2 models.
-- Request-scoped/last-wins state under one `asyncio.Lock` (no global accumulation, no per-request threads).
-- Endpoints implemented: `GET /health`, `POST /dashboard/setup`, `POST /dashboard/update`, `POST /settings`, `POST /theme`. pydantic `dict[Literal["day","night"], ...]` rejects unknown modes (422).
-- Body cap: **stream-bounded** middleware closes the chunked/CL-less bypass (reject once over `body_limit_bytes`, memory bounded by the limit) and keeps the fast-path `content-length` rejection (413). Optional `Authorization: Bearer <token>` via `auth_token`.
-- `switch_theme` is an injected `Callable[[str], None]` (default no-op); called **off-loop** via `asyncio.to_thread` bounded by `switch_timeout_s`, and non-fatal (a hung/bad trcc call logs + last state holds) — never freezes the worker.
-- Bridge: `src/manager/state.py` pure `bridge_dict(state)` (data-plane payload without seq) -> `src/manager/store.py` `AtomicStateFile` (temp + `fsync` + `os.replace`, monotonic `seq` recovered across restarts). `/health` seeds `last_seq` from `store.read()` so it is never stale after a restart.
-- Palette/theme derivation: `active_palette` / `active_theme` from the current mode; `/settings` recomputes for the current mode; `/theme` commits state then switches.
-- Tests (`test_manager_state.py`, `test_manager_store.py`, `test_manager_api.py`) cover the pure model, atomic seq, and the full HTTP contract via `TestClient` + fakes (33 tests total green; `ruff`/`mypy` clean).
+## Фаза 1 — реализована (проверено headless)
+- `src/manager/` FastAPI + uvicorn (один async-воркер, `loop="asyncio"`), pydantic v2 модели.
+- Состояние request-scoped/last-wins под одним `asyncio.Lock` (без глобального накопления, без потоков
+  на запрос).
+- Реализованы эндпоинты: `GET /health`, `POST /dashboard/setup`, `POST /dashboard/update`,
+  `POST /settings`, `POST /theme`. pydantic `dict[Literal["day","night"], ...]` отклоняет незнакомые
+  режимы (422).
+- Лимит тела: **stream-bounded** middleware закрывает обход chunked/без Content-Length (отклоняет после
+  `body_limit_bytes`, память ограничена лимитом) и сохраняет быстрое отклонение по `content-length` (413).
+  Опциональный `Authorization: Bearer <token>` через `auth_token`.
+- `switch_theme` — инжектируемый `Callable[[str], None]` (по умолчанию no-op); вызывается **вне цикла**
+  через `asyncio.to_thread` с границей `switch_timeout_s` и не фатален (зависший/плохой вызов trcc
+  логируется + держится последнее состояние) — никогда не замораживает воркер.
+- Мост: `src/manager/state.py` чистый `bridge_dict(state)` (payload плоскости данных без seq) ->
+  `src/manager/store.py` `AtomicStateFile` (temp + `fsync` + `os.replace`, монотонный `seq`
+  восстанавливается между рестартами). `/health` инициализирует `last_seq` из `store.read()`, чтобы он
+  никогда не был устаревшим после рестарта.
+- Вывод палитры/темы: `active_palette` / `active_theme` из текущего режима; `/settings` пересчитывает
+  для текущего режима; `/theme` коммитит состояние и затем переключает.
+- Тесты (`test_manager_state.py`, `test_manager_store.py`, `test_manager_api.py`) покрывают чистую модель,
+  атомарный seq и полный HTTP-контракт через `TestClient` + фейки (всего 33 теста зелёные;
+  `ruff`/`mypy` чисто).

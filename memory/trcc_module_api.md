@@ -1,23 +1,26 @@
-# trcc_module_api.md — trcc extension (module) API
+# trcc_module_api.md — API расширения (модуля) trcc
 
-- Module = `BaseModule` subclass with `key=`; override `_enable`/`_disable`; optional `start`/`stop`.
-- Module folder: `module.json`, `__init__.py`, `app.py`, optional `core/`, `ui/<face>/`.
-- `module.json`: `key`, `min_trcc`, `default_on`; declare `capabilities` to use panels/background/etc.
+- Модуль = подкласс `BaseModule` с `key=`; переопределить `_enable`/`_disable`; опционально `start`/`stop`.
+- Папка модуля: `module.json`, `__init__.py`, `app.py`, опционально `core/`, `ui/<face>/`.
+- `module.json`: `key`, `min_trcc`, `default_on`; объявить `capabilities`, чтобы использовать
+  panels/background и пр.
 - CLI: `trcc system modules {list|on|off|developer|install-folder}`.
-- Install: `trcc system modules developer on` -> `install-folder <path> --yes` (unsigned, off) ->
-  `on <key>`; persists across daemon restarts.
+- Установка: `trcc system modules developer on` -> `install-folder <path> --yes` (unsigned, off) ->
+  `on <key>`; сохраняется между рестартами демона.
 
-## Frame / background
+## Кадр / фон
 - `FrameSource.latest() -> RawFrame`, `close()`.
-- Show: `host.background.show(key, source, fps)`; return: `background.end(key)`.
-- `BackgroundKind`: register with `host.themes.add_kind`; `play/resume/snapshot`; prefix = folder.
-- Watch incoming frames: `host.frames.watch(handler)` -> `PanelPicture`.
-- Access: `host.panels`, `host.settings`, `host.files.data_root()`.
+- Показ: `host.background.show(key, source, fps)`; возврат: `background.end(key)`.
+- `BackgroundKind`: регистрировать через `host.themes.add_kind`; `play/resume/snapshot`;
+  префикс = папка.
+- Наблюдать входящие кадры: `host.frames.watch(handler)` -> `PanelPicture`.
+- Доступ: `host.panels`, `host.settings`, `host.files.data_root()`.
 
-## Capability gate (verified)
-Module must declare needed capabilities in `module.json`, else e.g.
+## Гейт по capability (проверено)
+Модуль обязан объявить нужные capabilities в `module.json`, иначе, напр.,
 `Stub asked for 'panels' without declaring it in its module.json`.
 
-## Our stub module (reference)
-`dev/trcc-module-stub/stub/` — key `stub`, min_trcc `9.12.0`, `default_on false`, installed + ON,
-verified called (`HARDWARESCREEN_STUB: enabled host=ModuleScope`). GPL-3.0-only (imports trcc internals).
+## Наш модуль-заглушка (референс)
+`dev/trcc-module-stub/stub/` — ключ `stub`, min_trcc `9.12.0`, `default_on false`, установлен + ON,
+вызывается (проверено) (`HARDWARESCREEN_STUB: enabled host=ModuleScope`). Только GPL-3.0
+(импортирует внутренности trcc).

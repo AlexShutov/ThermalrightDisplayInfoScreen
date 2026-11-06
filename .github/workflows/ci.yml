@@ -12,9 +12,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install
+      - name: Установка
         run: pip install -e ".[dev]"
-      - name: Quality gate
+      - name: Ворота качества
         env:
           PYTHON: python
         run: tools/quality_check.sh

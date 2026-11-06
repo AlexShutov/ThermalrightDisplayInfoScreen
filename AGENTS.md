@@ -1,193 +1,221 @@
 # AGENTS.md
 
-## Project Goal
-A **portable, self-contained app** that drives the **Thermalright Trofeo Vision 11.3 LCD**
-(USB `0416:5408`, "LY" bulk protocol) as a system-info dashboard, with:
+## Язык проекта — русский (для правил и документации)
 
-- **USB reconnect** (the device sits in a car; power/USB cable can drop) — recover automatically.
-- **Reactive rendering** — render + send only when displayed data changes (it is a picture-frame
-  panel; identical data does not need resending).
-- **Keepalive** — the panel reverts to its logo ~2–3 s after the last frame, so send at least every
-  ~1.5–2 s to hold the dashboard.
-- **Portability without an LLM** — the runtime is plain Python + system tools; it must build, run
-  and configure with `pip install` and a config file, with **no AI/LLM required** at build or run time.
+**Правила, инструкции и документация пишутся на русском:** содержимое этого `AGENTS.md`,
+заметки в `memory/`, `README.md` и прочая документация, тексты в UI и сообщения коммитов.
 
-## Hardware / protocol facts (measured on real hardware, do not re-derive)
+**Код остаётся на английском:** комментарии и docstring в `.py`-файлах, идентификаторы
+(имена переменных/функций/классов/ключей конфига и env-переменных) — только по смыслу
+(см. «Meaningful names»), латиницей. Не переводим существующие комментарии в коде.
 
-- Device: `VID 0x0416 PID 0x5408`, `USBDISPLAY`, LY bulk.
-- Endpoints: **write EP `0x09` OUT**, **read EP `0x81` IN** (auto-detected; do not hardcode the
-  class's `_EP_WRITE`).
-- **Handshake**: write 2048 bytes → read 512 bytes. Validate `resp[0]==3`, `resp[1]==0xFF`,
-  `resp[8]==1`. `PM = 64 + max(resp[20], 1)` (clamp raw<=3 to 1), `SUB = resp[22] + 1`.
-  `PM==69` → Trofeo Vision **11.3** (marketed 1920×400; handshake reply reports 1920×440).
-- **Frame send**: payload → 512-byte chunks (16-byte header + 496 data). Header:
+Не смешиваем языки в одном файле: файл правил/доков ведём полностью на русском,
+код — полностью на английском.
+
+## Цель проекта
+
+**Портативное самодостаточное приложение**, которое управляет **Thermalright Trofeo Vision 11.3 LCD**
+(USB `0416:5408`, протокол "LY" bulk) как панелью системной информации, с таким функционалом:
+
+- **Переподключение USB** (устройство стоит в машине; питание/USB-кабель могут отвалиться) —
+  восстанавливаться автоматически.
+- **Реактивный рендеринг** — отправлять только при изменении отображаемых данных (это панель-рамка
+  для картинки; одинаковые данные не нужно пересылать).
+- **Keepalive** — панель возвращается к логотипу через ~2–3 с после последнего кадра, поэтому слать
+  надо не реже, чем раз в ~1.5–2 с, чтобы удерживать дашборд.
+- **Портативность без LLM** — рантайм это чистый Python + системные утилиты; он должен собираться,
+  запускаться и настраиваться через `pip install` и конфиг-файл, **без AI/LLM** на этапе сборки или
+  запуска.
+
+## Аппаратные / протокольные факты (измерены на реальном железе, не перевыводить)
+
+- Устройство: `VID 0x0416 PID 0x5408`, `USBDISPLAY`, LY bulk.
+- Эндпоинты: **write EP `0x09` OUT**, **read EP `0x81` IN** (авто-детект; не хардкодить
+  `_EP_WRITE` класса).
+- **Handshake**: записать 2048 байт → прочитать 512 байт. Проверять `resp[0]==3`, `resp[1]==0xFF`,
+  `resp[8]==1`. `PM = 64 + max(resp[20], 1)` (clamp raw<=3 к 1), `SUB = resp[22] + 1`.
+  `PM==69` → Trofeo Vision **11.3** (маркетинг 1920×400; ответ handshake сообщает 1920×440).
+- **Отправка кадра**: payload → чанки по 512 байт (16 байт заголовок + 496 данных). Заголовок:
   `b0=0x01, b1=0xFF, u32@2=total_size, u16@6=data_len, b8=0x01(LY), u16@9=num_chunks, u16@11=idx`.
-  Pad chunk count to a multiple of **4**. Write in **4096-byte** writes on `0x09`, then read a
-  512-byte ACK on `0x81`.
-- **Frame-size ceiling: JPEG ≤ 450 000 bytes.** Above ~450 KB the panel silently freezes/drops
-  frames (measured: Q~80/443 KB displays; Q~88/553 KB freezes). Never exceed the budget — enforce
-  a quality/scale shrink loop. Do **not** rely on the ACK to detect a drop (ACK returns even for
-  dropped frames).
-- **Frame-rate ceiling: ~18 FPS** (write+ACK round-trip ≈ 55 ms), essentially independent of frame
-  size within budget. This is the vendor's own `idle 2 / active 15 FPS` design.
-- **Revert-to-logo**: the panel returns to the logo ~2–3 s after the last frame → the renderer must
-  send a keepalive frame at least every ~1.5–2 s.
+  Паддинг числа чанков до кратного **4**. Писать записями по **4096 байт** на `0x09`, затем читать
+  ACK на 512 байт на `0x81`.
+- **Потолок размера кадра: JPEG ≤ 450 000 байт.** Выше ~450 KB панель молча зависает/роняет кадры
+  (измерено: Q~80/443 KB отображается; Q~88/553 KB зависает). Никогда не превышать бюджет — включить
+  цикл ужатия качества/масштаба. **Не** полагаться на ACK для детекта потери (ACK приходит даже для
+  потерянных кадров).
+- **Потолок частоты: ~18 FPS** (write+ACK ≈ 55 мс), практически независимо от размера кадра в рамках
+  бюджета. Это фирменный дизайн `idle 2 / active 15 FPS`.
+- **Возврат к логотипу**: панель возвращается к логотипу через ~2–3 с после последнего кадра → рендерер
+  должен слать keepalive-кадр не реже, чем раз в ~1.5–2 с.
 
-## Essential Architecture
+## Ключевая архитектура
 
-- **`src/hardwarescreen/`** package (installable, console script `hardwarescreen`):
-  - `supervise.py` — USB-lifetime supervisor (state machine `WAIT ⟷ RUN`; poll `1s`, backoff;
-    starts/stops the engine; handles SIGINT/SIGTERM).
-  - `render.py` — **reactive renderer**: collects metric changes → dirty-check → re-render; plus a
-    keepalive timer (~2 s); enforces the 450 KB frame budget.
-  - `ly.py` — our own LY USB transport (proven, pure Python via pyusb): handshake + frame send
-    (+ ACK). This makes the core path self-contained and portable without `trcc`.
-  - `canvas.py` — frame composition (Pillow) for the dashboard.
-  - `sensors.py` — CPU/GPU/RAM/temp/disk/net collection (psutil).
-  - `config.py` — YAML-first config.
-- **Optional engine** `trcc-linux` (a ready Control Center, **GPL-3.0**) for advanced themes/video.
-  The thin client can drive it, or fall back to `ly.py`. On real hardware (9.12.0, macOS dev) it
-  detects `0416:5408`, connects as **Trofeo Vision 11.3, 1920×440, model_id 69** (cross-validates our
-  handshake/PM=69) and sends frames. The **persistent engine is `trcc daemon`** (owns USB, serves the
-  IPC socket, renders + keeps the panel updated) — so the supervisor wraps `.../trcc daemon`. The
-  one-shot commands (`display play`, `display load-image`, `display serve`) are **triggers** that
-  auto-start the daemon when none is running, and are NOT standalone long-running engine processes.
-  We still layer our own supervisor on top so USB reconnect is our responsibility.
+- **Пакет `src/hardwarescreen/`** (устанавливаемый, console script `hardwarescreen`):
+  - `supervise.py` — супервизор жизненного цикла USB (state machine `WAIT ⟷ RUN`; опрос `1s`, backoff;
+    запускает/останавливает движок; обрабатывает SIGINT/SIGTERM).
+  - `render.py` — **реактивный рендерер**: собирает изменения метрик → dirty-check → перерисовка;
+    плюс keepalive-таймер (~2 с); следит за бюджетом 450 KB.
+  - `ly.py` — наш собственный LY USB-транспорт (проверенный, чистый Python через pyusb): handshake +
+    отправка кадра (+ ACK). Это делает основной путь самодостаточным и портативным без `trcc`.
+  - `canvas.py` — композиция кадра (Pillow) для дашборда.
+  - `sensors.py` — сбор CPU/GPU/RAM/температуры/диска/сети (psutil).
+  - `config.py` — YAML-первичный конфиг.
+- **Опциональный движок** `trcc-linux` (готовый Control Center, **GPL-3.0**) для продвинутых тем/видео.
+  Тонкий клиент может управлять им или откатиться на `ly.py`. На реальном железе (9.12.0, macOS dev)
+  он детектит `0416:5408`, подключается как **Trofeo Vision 11.3, 1920×440, model_id 69** (перекрёстно
+  валидирует наш handshake/PM=69) и шлёт кадры. **Постоянный движок — это `trcc daemon`** (владеет USB,
+  обслуживает IPC-сокет, рендерит и держит панель обновлённой) — поэтому супервизор оборачивает
+  `.../trcc daemon`. Разовые команды (`display play`, `display load-image`, `display serve`) — это
+  **триггеры**, которые авто-стартуют демон, когда ни один не запущен, и НЕ являются отдельными
+  долгоживущими процессами движка. Мы всё равно кладём поверх свой супервизор, чтобы переподключение
+  USB было нашей ответственностью.
 
-## Theme Manager (local HTTP service + Qt adapter)
+## Менеджер тем (локальный HTTP-сервис + Qt-адаптер)
 
-The active project work extends the app into a **theme manager / SDK** on top of `trcc daemon`:
+Активная работа расширяет приложение в **менеджер тем / SDK** поверх `trcc daemon`:
 
-- **Architecture: two planes.**
-  - *Display plane* (the host that owns USB + the panel): `manager` (HTTP service) + `trcc daemon`
-    (plays the video theme) + a **Qt adapter module** that draws the dashboard *on top of* the theme.
-  - *Data plane* (any host on LAN): producer apps/daemons `POST` JSON to the manager. Merge stays
-    local on the display host; a remote producer crashing never kills the dashboard (last state holds).
-- **Manager stack: Python + FastAPI + uvicorn** (single worker, `loop="asyncio"`), **pydantic v2** for
-  request validation. Chosen for 24/7 robustness: request-scoped state (no global accumulation →
-  no leak), one async worker (no per-request thread → no race), bounded request-body size middlware
-  (→ 413 instead of OOM on small RAM), timeouts on every outbound call, `systemd Restart=on-failure`.
-- **Manager → module bridge: atomic state file with monotonic `seq`** (temp + `os.replace`, the module
-  polls and reacts to `seq` growth). No IPC library; avoids torn reads and backpressure; the module
-  sees stale data via a `seq`/`updated_at` guard.
-- **API contract (subject to change as we build):**
+- **Архитектура: две плоскости.**
+  - *Плоскость отображения* (хост, который владеет USB + панелью): `manager` (HTTP-сервис) + `trcc daemon`
+    (играет видео-тему) + **Qt-адаптер-модуль**, который рисует дашборд *поверх* темы.
+  - *Плоскость данных* (любой хост в LAN): приложения/демоны-продюсеры `POST`-ят JSON в менеджер.
+    Слияние остаётся локальным на хосте отображения; падение удалённого продюсера никогда не убивает
+    дашборд (последнее состояние удерживается).
+- **Стек менеджера: Python + FastAPI + uvicorn** (один воркер, `loop="asyncio"`), **pydantic v2** для
+  валидации запросов. Выбрано ради 24/7 надёжности: состояние в scope запроса (без глобального накопления →
+  без утечки), один async-воркер (без потока на запрос → без гонки), middleware на лимит размера тела
+  запроса (→ 413 вместо OOM на малом RAM), таймауты на каждый исходящий вызов, `systemd Restart=on-failure`.
+- **Мост менеджер → модуль: атомарный файл состояния с монотонным `seq`** (temp + `os.replace`, модуль
+  опрашивает и реагирует на рост `seq`). Никакой IPC-библиотеки; избегает разорванных чтений и
+  backpressure; модуль видит устаревшие данные через guard по `seq`/`updated_at`.
+- **Контракт API (может меняться по мере постройки):**
   - `POST /dashboard/setup` — `{ "gauges":[{"id","label","unit","min","max"}] }`
-  - `POST /dashboard/update` — `{ "values":{...} }` (full or partial)
+  - `POST /dashboard/update` — `{ "values":{...} }` (полностью или частично)
   - `POST /settings` — `{ "themes":{"day":id,"night":id}, "adapter":{"day":{palette},"night":{palette}} }`;
-    the manager computes the **active palette from the current mode** and is the way theme colors reach
-    the adapter (color names: `background`, `panel`, `accent`, `text`, `muted`).
-  - `POST /theme` — `{ "mode":"day"|"night" }` (manual trigger), switches trcc theme + adapter style.
+    менеджер вычисляет **активную палитру из текущего режима** и так цвета темы доходят до адаптера
+    (имена цветов: `background`, `panel`, `accent`, `text`, `muted`).
+  - `POST /theme` — `{ "mode":"day"|"night" }` (ручной триггер), переключает тему trcc + стиль адаптера.
   - `GET /health` — `{ "status","uptime_s","seq","mode" }`
-  - Bridge state object: `{ "seq", "mode", "active_theme", "palette", "setup", "values" }`
-- **Render/lifecycle rule:** *no data → `background.end(key)`* (clean theme); *data present →
-  `background.show(key, source, fps)`*. Render reactively (on change), keepalive for the panel.
-- **Composite choice: Qt adapter (variant A)** — theme video plays as the background, Qt draws an
-  overlay packed into the frame and handed to `background`. Static-JPEG fallback is not the target
-  (loses live cloud themes).
-- **Licensing:** the manager stays **MIT**; the **Qt adapter module is GPL-3.0** (imports trcc
-  internals) — a separate external integration, never copied into MIT sources (same rule as trcc).
-- **Hardware target:** dev + runtime is **macOS** today (Trofeo is USB here; trcc daemon runs headless).
-  **Pi 5 / Orange Pi 6 Plus are future** deployment targets. Keep platform specifics (ffmpeg hwaccel,
-  headless Qt `QT_QPA_PLATFORM=offscreen`, DPI/devicePixelRatio, `sensors` temperature branch, Python
-  version, udev/systemd) behind `config.py` so the port later is config-only. On Pi 5 verify `trcc`
-  runs on aarch64 (the one real porting risk); fallback is our own `ly.py` + `supervise.py`.
+  - Объект состояния моста: `{ "seq", "mode", "active_theme", "palette", "setup", "values" }`
+- **Правило рендеринга/жизненного цикла:** *нет данных → `background.end(key)`* (чистая тема);
+  *есть данные → `background.show(key, source, fps)`*. Рендерить реактивно (на изменение), keepalive
+  для панели.
+- **Выбор композита: Qt-адаптер (вариант A)** — видео-тема играет как фон, Qt рисует оверлей, упакованный
+  в кадр и отданный в `background`. Статический JPEG-фолбэк не цель (теряет живые облачные темы).
+- **Лицензирование:** менеджер остаётся **MIT**; **модуль Qt-адаптера — GPL-3.0** (импортирует внутренности
+  trcc) — отдельная внешняя интеграция, никогда не копируется в MIT-исходники (то же правило, что и trcc).
+- **Целевое железо:** dev + runtime сегодня **macOS** (Trofeo тут на USB; trcc daemon работает headless).
+  **Pi 5 / Orange Pi 6 Plus — будущие цели** развёртывания. Держать платформенные особенности
+  (ffmpeg hwaccel, headless Qt `QT_QPA_PLATFORM=offscreen`, DPI/devicePixelRatio, ветку температуры в
+  `sensors`, версию Python, udev/systemd) за `config.py`, чтобы порт потом был только через конфиг.
+  На Pi 5 проверить, что `trcc` работает на aarch64 (единственный реальный риск порта); фолбэк — наш
+  `ly.py` + `supervise.py`.
 
-## Memory System (read on session start, archive on wrap-up)
+## Система памяти (читать на старте сессии, архивировать при завершении)
 
-We keep a trcc-style memory tree so a new session/LLM picks up full context without re-deriving it:
+Держим дерево памяти в стиле trcc, чтобы новая сессия/LLM подхватывала полный контекст без вывода заново:
 
-- **Startup order:** read `memory/SESSION.md` first (live handoff: current state + next step), then
-  `memory/MEMORY.md` (index of durable topic files), then open the topic files relevant to the task
+- **Порядок на старте:** первым читать `memory/SESSION.md` (живая передача: текущее состояние + следующий
+  шаг), затем `memory/MEMORY.md` (индекс файлов-тем), затем открыть файлы-темы, релевантные задаче
   (`hardware_protocol`, `trcc_engine`, `trcc_module_api`, `architecture`, `conventions`).
-- **Live vs durable:** `memory/SESSION.md` holds only current-run state and is rewritten every session.
-  Durable facts go in a topic file + the index, never in `SESSION.md`.
-- **Wrap-up:** before overwriting `SESSION.md`, copy its outgoing content to
-  `memory/sessions/YYYY-MM-DD-<slug>.md` and add a line to that folder's `README.md`. Then rewrite it.
-- **Verify, don't trust prose:** memory is point-in-time. Re-measure `file:line` claims against the
-  current code before acting on them (anchors drift). Treat any written plan as a hypothesis, not a fact.
+- **Живое vs постоянное:** `memory/SESSION.md` хранит только состояние текущего прогона и переписывается
+  каждую сессию. Постоянные факты идут в файл-тему + индекс, никогда в `SESSION.md`.
+- **Завершение:** перед перезаписью `SESSION.md` скопировать его исходящее содержимое в
+  `memory/sessions/YYYY-MM-DD-<slug>.md` и добавить строку в `README.md` этой папки. Затем переписать его.
+- **Проверяй, не доверяй прозе:** память — это снимок на момент времени. Перепроверяй утверждения
+  `file:line` по текущему коду перед действиями (якоря дрейфуют). Относись к любому написанному плану как к
+  гипотезе, а не факту.
 
-## Repository-Specific Conventions
+## Соглашения по репозиторию
 
-- **Runtime is pure Python.** Deps: `pyusb`, `pillow`, `psutil` (+ optional `trcc-linux`). No LLM, no
-  AI SDK, no generated-runtime dependency; `pip install .` must be enough to run.
-- **`src/` layout + `pyproject.toml`.** Entry point: `hardwarescreen = hardwarescreen.__main__:main`.
-- **YAML-first config** (`config.yaml`); do not hardcode values; add options to config first, then
-  load them in `config.py`.
-- **`max_frame_bytes = 450000`** everywhere — the encode path must shrink (quality/scale) until the
-  JPEG fits; never bypass.
-- **Keepalive** is required (panel revert). Default `keepalive_s = 2.0`.
-- **Reconnect state machine** lives in `supervise.py`; do not scatter USB lifecycle logic elsewhere.
-- **Portability:** the same code runs on macOS (dev) and Linux aarch64 (Raspberry Pi / Orange Pi).
-  Linux deployment: `deploy/` ships `systemd` (Restart=on-failure) + `udev` rule. No macOS-only
-  native helper is required by our code (`trcc`'s powermetrics helper is optional and macOS-only).
-- **Licenses:** our code is **MIT**. `trcc-linux` is **GPL-3.0** — do **not** copy its code into our
-  MIT sources; keep it as an external integration (subprocess/installed dependency) to avoid
-  copyleft on our package.
-- **Probes:** temporary hardware tests (`tools/probe_ly.py`, `tools/probe_fps.py`) are dev tools,
-  not shipped in the package.
-- License header expected in `.py` files: `SPDX-License-Identifier: MIT`.
+- **Рантайм — чистый Python.** Зависимости: `pyusb`, `pillow`, `psutil` (+ опционально `trcc-linux`).
+  Без LLM, без AI SDK, без генерируемой runtime-зависимости; `pip install .` должно быть достаточно.
+- **Раскладка `src/` + `pyproject.toml`.** Точка входа: `hardwarescreen = hardwarescreen.__main__:main`.
+- **YAML-первичный конфиг** (`config.yaml`); не хардкодить значения; сначала добавлять опции в конфиг,
+  затем загружать их в `config.py`.
+- **`max_frame_bytes = 450000`** везде — путь кодирования обязан ужимать (качество/масштаб), пока JPEG не
+  влезет; никогда не обходить.
+- **Keepalive** обязателен (возврат панели). По умолчанию `keepalive_s = 2.0`.
+- **Машина состояний переподключения** живёт в `supervise.py`; не разбрасывать логику жизненного цикла USB
+  по другим местам.
+- **Портативность:** один и тот же код работает на macOS (dev) и Linux aarch64 (Raspberry Pi / Orange Pi).
+  Развёртывание на Linux: `deploy/` поставляет `systemd` (Restart=on-failure) + правило `udev`/`udev` правило.
+  Нашему коду не требуется macOS-only нативный хелпер (`trcc`'s powermetrics helper — опциональный и
+  macOS-only).
+- **Лицензии:** наш код **MIT**. `trcc-linux` — **GPL-3.0** — **не** копировать его код в наши MIT-исходники;
+  держать как внешнюю интеграцию (subprocess/установленная зависимость), чтобы избежать copyleft на пакете.
+- **Пробы (Probes):** временные аппаратные тесты (`tools/probe_ly.py`, `tools/probe_fps.py`) — это dev-инструменты,
+  не поставляются в пакете.
+- **Заголовок лицензии** ожидается в `.py`-файлах: `SPDX-License-Identifier: MIT`.
+- **Осмысленные имена (по смыслу), везде**: git-ветки, файлы, функции, переменные, ключи конфига и
+  env-переменные говорят, ЧТО они есть/делают (`hide_gauges_when_no_data`, `theme_frame_path`), никогда КАК
+  или устаревший ярлык (`flag`, `temp2`, имя фичи, переиспользованное для несвязанной работы). Переименовывать,
+  как только смысл меняется; не давать имени описывать старую задачу.
 
-## Git / Commit Policy
+## Git / Политика коммитов
 
-- **One commit per task.** For every item in the Kilo/KiloCode task list, create a
-  **separate commit** whose message describes that task (the message should read
-  like the task's description in the task list).
-- Commit each task as soon as it is finished, before moving on to the next one.
-- Keep a commit focused on one task — do not mix unrelated changes into one commit.
-- Match the repo's existing commit style / wording.
+- **Один коммит на задачу.** Для каждого пункта в списке задач Kilo/KiloCode создавать **отдельный коммит**,
+  сообщение которого описывает эту задачу (сообщение должно читаться как описание задачи в списке).
+- Коммитить задачу, как только она готова, прежде чем переходить к следующей.
+- Держать коммит сфокусированным на одной задаче — не смешивать несвязанные изменения в один коммит.
+- Соответствовать существующему стилю/формулировкам коммитов в репозитории.
+- **Называть ветки по смыслу.** Ветка/worktree называется (по смыслу) по задаче или теме, которую делает,
+  например `phase-2-3-dashboard-adapter`, `theme-overlay-over-video` — не по имени фичи или старой задаче.
+  Если работа, которую несёт ветка, меняется — переименовать её (или разделить), чтобы имя ветки
+  соответствовало тому, что она фактически содержит; не давать устаревшему имени ветки вводить в заблуждение
+  относительно HEAD.
 
-## Bug-Analysis Gate (mandatory, before AND after every change)
+## Ворота анализа багов (обязательные, до И после каждого изменения)
 
-Never edit a file without first analysing it, and never finish without confirming you introduced no
-new bugs. This is a gate, not a style preference.
+Никогда не редактировать файл без предварительного анализа и не заканчивать, не убедившись, что не внёс
+новых багов. Это ворота, а не вкусовое предпочтение.
 
-**Before any change to a file, OUT LOUD:**
-- Read the file being changed AND its callers/consumers (don't grep words to conclude — trace the
-  data through each hop: signal -> handler -> execute -> service -> render; stop at the first hop you
-  haven't read).
-- Report findings by severity — **critical** (crash/data-loss/wrong output on the happy path),
-  **major** (breaks a supported path, edge conditions), **minor** (style/naming/UX) — and say which
-  one you're about to affect.
+**Перед любым изменением файла, ВСЛУХ:**
+- Прочитать изменяемый файл И его вызывающих/потребителей (не искать слова для вывода — проследить данные
+  через каждый хоп: signal -> handler -> execute -> service -> render; остановиться на первом хопе, который
+  ты не прочитал).
+- Сообщать находки по серьёзности — **critical** (краш/потеря данных/неверный вывод на счастливом пути),
+  **major** (ломает поддерживаемый путь, граничные условия), **minor** (стиль/именование/UX) — и сказать,
+  какой из них ты собираешься затронуть.
 
-**After the change + tests, again:**
-- Re-run the mechanical harness: `tools/quality_check.sh` (ruff + mypy + pytest).
-- Run the **semantic bug-hunt subagent** (below) on the changed area; it reports critical/major/minor
-  + any regressions. Fix or justify each one before declaring done.
-- Confirm explicitly: "no new bugs in <file>; change X tested".
+**После изменения + тестов, снова:**
+- Прогнать механический харнесс: `tools/quality_check.sh` (ruff + mypy + pytest).
+- Прогнать **семантический баг-хунт сабагента** (ниже) по изменённой области; он сообщает critical/major/minor
+  + любые регрессии. Исправить или обосновать каждое перед объявлением готовности.
+- Подтвердить явно: "no new bugs in <file>; change X tested".
 
-**Semantic bug-hunt subagent prompt (use as-is, replace `<scope>`):**
+**Промпт семантического баг-хунт сабагента (использовать как есть, заменить `<scope>`):**
 > `Analyze this changed area for bugs. Be very thorough: open the file(s) and their callers, trace data
 > through every hop (signal -> handler -> execute -> service -> render). Report by severity: critical
 > (crash / data loss / wrong output on the happy path), major (breaks a supported path), minor
 > (style/naming). Then re-check the diff for regressions introduced by the change. Return a concise
 > list with file:line evidence and a verdict: CLEAN or issues to fix. Scope: <scope>`
 
-**Verification is by run, not prose.** A phase/change is "done" only when the harness is green and the
-subagent verdict is CLEAN (or every issue is fixed/justified). If you defer verification to hardware
-"later", say so out loud (that is the progress-theater trap).
+**Верификация — прогоном, а не прозой.** Фаза/изменение "готово", только когда харнесс зелёный и вердикт
+сабагента CLEAN (или каждая проблема исправлена/обоснована). Если откладываешь верификацию на железо
+"потом" — скажи это вслух (это ловушка прогресса-театра).
 
-## Critical Developer Workflows
+## Критические рабочие процессы разработчика
 
-- Install: `pip install -e .` (or `pip install .`).
-- Run the dashboard client: `hardwarescreen run` (reactive renderer + keepalive + reconnect).
-- Run the supervisor: `hardwarescreen supervise` (USB lifecycle around an engine).
-- Config: edit `config.yaml`, then run; `hardwarescreen --version`.
-- Device test (dev, no app): `python tools/probe_ly.py` (handshake + frame ladder),
-  `python tools/probe_fps.py` (measure ceiling).
+- Установка: `pip install -e .` (или `pip install .`).
+- Запуск клиента дашборда: `hardwarescreen run` (реактивный рендерер + keepalive + переподключение).
+- Запуск супервизора: `hardwarescreen supervise` (жизненный цикл USB вокруг движка).
+- Конфиг: отредактировать `config.yaml`, затем запустить; `hardwarescreen --version`.
+- Тест устройства (dev, без приложения): `python tools/probe_ly.py` (handshake + лестница кадров),
+  `python tools/probe_fps.py` (измерить потолок).
 
-## Data Flow (practical)
+## Поток данных (практический)
 
-- `config.yaml` → `config.py` (panel size, keepalive, budget, sensor set, theme/video).
-- `sensors.py` → metric snapshots → `render.py` dirty-check.
-- `render.py` (on change or keepalive) → `canvas.py` compose → JPEG (≤450 KB) → `ly.py` send → USB.
-- `supervise.py` wraps the whole loop so a USB drop → `WAIT` → re-open+handshake → resume.
+- `config.yaml` → `config.py` (размер панели, keepalive, бюджет, набор датчиков, тема/видео).
+- `sensors.py` → снапшоты метрик → `render.py` dirty-check.
+- `render.py` (на изменение или keepalive) → `canvas.py` compose → JPEG (≤450 KB) → `ly.py` send → USB.
+- `supervise.py` оборачивает весь цикл, так что пропадание USB → `WAIT` → пере-открытие+handshake → resume.
 
-## Reference Files
+## Справочные файлы
 
-- USB/protocol + transport: `src/hardwarescreen/ly.py`, `protocol.py`
-- Reconnect: `src/hardwarescreen/supervise.py`
-- Reactive render + keepalive + budget: `src/hardwarescreen/render.py`
-- Config: `src/hardwarescreen/config.py`
-- Deploy: `deploy/hardwarescreen-supervisor.service`, `deploy/99-hardwarescreen-lcd.rules`
-- Upstream protocol reference (read-only): `Lexonight1/thermalright-trcc-linux`
+- USB/протокол + транспорт: `src/hardwarescreen/ly.py`, `protocol.py`
+- Переподключение: `src/hardwarescreen/supervise.py`
+- Реактивный рендеринг + keepalive + бюджет: `src/hardwarescreen/render.py`
+- Конфиг: `src/hardwarescreen/config.py`
+- Развёртывание: `deploy/hardwarescreen-supervisor.service`, `deploy/99-hardwarescreen-lcd.rules`
+- Апстрим-референс протокола (read-only): `Lexonight1/thermalright-trcc-linux`
   (`doc/PROTOCOL_USBLCDNEW.md`, `src/trcc/adapters/device/ly_lcd.py`)

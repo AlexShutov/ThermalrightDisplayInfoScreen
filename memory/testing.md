@@ -1,38 +1,39 @@
-# testing.md — testing strategy (reused from trcc, adapted to us)
+# testing.md — стратегия тестирования (переиспользована из trcc, адаптирована под нас)
 
-## Principle
-Core logic is **pure Python**; frameworks (Qt, FastAPI, trcc) are thin adapters only at the edges.
-Every key behavior is gated by a test. **"Verified" = a test run, not prose.** A phase is done only
-when its tests pass on the fake device AND the behavior matches the plan (no phase/milestone names;
-audit row flips MISSING -> WIRED by a green run).
+## Принцип
+Ядровая логика — **чистый Python**; фреймворки (Qt, FastAPI, trcc) — тонкие адаптеры только на краях.
+Каждое ключевое поведение гейтится тестом. **«Подтверждено» = прогон теста, а не проза.** Фаза
+готова, только когда её тесты проходят на фейковом устройстве И поведение совпадает с планом
+(без имён фаз/вех; строка аудита переходит MISSING -> WIRED по зелёному прогону).
 
-## Injectable ports (so logic is testable without hardware)
-- `FrameSink` — real `ly.py` USB transport / `FakePanel` (records frames; asserts 450 KB budget,
-  chunking, keepalive cadence, dirty-check: no resend on unchanged).
-- `SensorSource` — real `sensors.py` (psutil) / deterministic `FakeSource` (fixed metrics).
-- `TrccBackground` — real `trcc daemon` / `FakeBackground` (records `show`/`end` and frames).
-- `StateStore` — real atomic state file (seq bridge) / `FakeStore` (in-memory) for the manager.
+## Инжектируемые порты (чтобы логика тестировалась без железа)
+- `FrameSink` — реальный USB-транспорт `ly.py` / `FakePanel` (записывает кадры; проверяет бюджет 450 KB,
+  чанкинг, каденс keepalive, dirty-check: без пересылки при неизменном).
+- `SensorSource` — реальный `sensors.py` (psutil) / детерминированный `FakeSource` (фиксированные метрики).
+- `TrccBackground` — реальный `trcc daemon` / `FakeBackground` (записывает `show`/`end` и кадры).
+- `StateStore` — реальный атомарный файл состояния (seq-мост) / `FakeStore` (в памяти) для менеджера.
 
-## Test layout (mirrors trcc)
-- `tests/` — pytest **unit** on the pure core: render dirty-check, frame-budget shrink, state merge,
-  palette selection (mode -> palette), gauge layout, manager API via `fastapi.testclient.TestClient`
-  + fakes, bridge seq/staleness guard, request validation (setup/update/settings/theme).
-- `dev/` — **integration smoke harnesses** driving the whole pipeline with zero hardware:
+## Раскладка тестов (зеркалит trcc)
+- `tests/` — pytest **unit** на чистом ядре: рендер dirty-check, ужатие кадрового бюджета, merge
+  состояния, выбор палитры (mode -> palette), раскладка гейджей, API менеджера через
+  `fastapi.testclient.TestClient` + фейки, seq/устаревание моста, валидация запроса
+  (setup/update/settings/theme).
+- `dev/` — **интеграционные smoke-харнессы**, гоняющие весь пайплайн без железа:
   `dev/smoke_full_pipeline.py` (stub-data -> manager -> state file -> module -> FakePanel);
-  `dev/devices.json` + a `MockPanel` (analog of trcc's `MockPlatform` + `devices.json`).
-- `dev/tools/` — diagnostic tools (analog of trcc `diagnose_metrics.py`).
+  `dev/devices.json` + `MockPanel` (аналог `MockPlatform` + `devices.json` trcc).
+- `dev/tools/` — диагностические инструменты (аналог trcc `diagnose_metrics.py`).
 
-## Reused trcc solutions
-- `MockPlatform` + `dev/devices.json` -> our `MockPanel` + fake transport: run the full pipeline
-  with no USB (reporters/hardware never required just to verify).
-- Hexagonal ABC ports at boundaries -> inject a fake at the port; the core never imports an adapter.
-- Coverage **ratchet** (`tests/test_logging_coverage.py`) -> pytest-cov gate (threshold only goes up),
-  plus a gate on the critical path (frame-budget, keepalive, dirty-check).
-- "Reporter-gated is progress theater" -> never defer verification to hardware when a harness exists.
+## Переиспользованные решения trcc
+- `MockPlatform` + `dev/devices.json` -> наш `MockPanel` + fake-транспорт: гонять весь пайплайн
+  без USB (репортёры/железо никогда не требуются только для верификации).
+- Гексагональные ABC-порты на границах -> инжектировать фейк на порту; ядро не импортирует адаптер.
+- Coverage-**ratchet** (`tests/test_logging_coverage.py`) -> pytest-cov гейт (порог только растёт),
+  плюс гейт на критическом пути (frame-budget, keepalive, dirty-check).
+- «Гейты репортёров = прогресс-театр» -> никогда не откладывать верификацию на железо, когда есть харнесс.
 
-## Concrete rules for our code
-- Every critical behavior gets a test: frame-budget shrink (never >450000), keepalive cadence,
-  dirty-check (no resend on unchanged), state merge (last-wins, no growth), palette derivation from
-  mode, request validation, seq staleness guard.
-- Business logic = pure functions (no Qt/FastAPI imports) so one test runs headless.
-- Coverage gate on manager core + render core; run in CI (pytest + pytest-cov).
+## Конкретные правила для нашего кода
+- Каждое критическое поведение получает тест: ужатие frame-budget (никогда >450000), каденс
+  keepalive, dirty-check (без пересылки при неизменном), merge состояния (last-wins, без роста),
+  вывод палитры из режима, валидация запроса, guard устаревания по seq.
+- Бизнес-логика = чистые функции (без импортов Qt/FastAPI), чтобы один тест шёл headless.
+- Гейт покрытия на ядре менеджера + ядре рендера; гонять в CI (pytest + pytest-cov).

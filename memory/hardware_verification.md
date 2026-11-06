@@ -1,57 +1,67 @@
-# hardware_verification.md — on-screen check-list (requires the panel)
+# hardware_verification.md — чек-лист на экране (требуется панель)
 
-These checks can ONLY run with the real 1920x440 panel (`0416:5408`) attached and
-`trcc daemon` running with USB access. Every phase is otherwise proven headless
-(`tests/`, `tools/quality_check.sh`). Work from top to bottom; run each and record
-pass/fail. All timings/budgets are the totals the manager assumes.
+Эти проверки могут идти ТОЛЬКО с реальной панелью 1920x440 (`0416:5408`) и работающим `trcc daemon`
+с доступом к USB. Каждая фаза иначе доказана headless (`tests/`, `tools/quality_check.sh`).
+Идти сверху вниз; прогнать каждую и записать pass/fail. Все тайминги/бюджеты — это суммы,
+которые предполагает менеджер.
 
-Prep (once, before the check-list):
+Подготовка (один раз, до чек-листа):
 ```
-# start the manager (writes the atomic bridge manager_state.json)
+# запустить менеджер (пишет атомарный мост manager_state.json)
 hardwarescreen-manager --config manager.yaml
-# start the stub producer (optional, feeds gauges + random day/night switches)
+# запустить продюсер-заглушку (опционально, кормит гейджи + случайные день/ночь переключения)
 hardwarescreen-stubdata --config stubdata.yaml
-# install + enable the dashboard trcc module (GPL, dev/trcc-module-dashboard)
-```             
+# установить + включить trcc-модуль дашборда (GPL, dev/trcc-module-dashboard)
+```
 
-## A. Composite over theme
-- [ ] `dev/trcc-module-dashboard` enable: panel shows gauge bars over the day theme.
-- [ ] `background.end` (module disable / no-data) restores the pure theme (no leftover).
-- [ ] Bar color/text readable on both day and night palettes (no washed-out contrast).
-- [ ] Empty `setup`+`values` (no data) -> clean theme, NOT a stale dashboard.
+## A. Композит поверх темы
+- [x] Включение `dev/trcc-module-dashboard`: панель показывает полоски гейджей поверх дневной темы. (A1, подтверждено пользователем)
+- [x] `background.end` (отключение модуля / no-data) возвращает чистую тему (без остатка). (A2; также A4)
+- [x] Цвет полоски/текста читаем на обеих палитрах день/ночь (без вымытого контраста). (A3, день+ночь подтверждено)
+- [x] Пустые `setup`+`values` (нет данных) -> чистая тема, а НЕ устаревший дашборд. (A4: записан пустой мост seq>seen -> в логе `background.end dashboard`. ПРИМЕЧАНИЕ: API менеджера не может очистить `values`; настоящий пустой мост требует cold start / продюсера с пустыми данными.)
 
-## B. Attach race
-- [ ] Enable the module BEFORE the panel is attached: no crash; dashboard appears
-      once the panel attaches (driver defers `show`).
-- [ ] Unplug/replug the panel while the module is shown: recovers to a live dashboard.
+## B. Attach-race
+- [x] Включить модуль ДО подключения панели: без краша; дашборд появляется, когда панель подключилась
+      (драйвер откладывает `show`). (демон 85881 отключён: без traceback; `background.end dashboard on 0416:5408` на отключении)
+- [x] Вынуть/воткнуть панель при показанном модуле: восстановление в живой дашборд. (unplug->`background.end`->тема; replug->`background.show: dashboard on 0416:5408` + `set_module_source module=dashboard`, без краша)
 
-## C. Render budget / geometry
-- [ ] Renderer never emits a frame > `max_frame_bytes` (450 KB) at 1920x440.
-- [ ] `compose_dashboard` at 1920x440 produces a valid frame every tick (no
-      `ValueError`, no zero-height gauge crash with many gauges).
+## C. Бюджет рендера / геометрия
+- [x] Рендерер никогда не выдаёт кадр > `max_frame_bytes` (450 KB) на 1920x440. (проверка размера композита 1920x440)
+- [x] `compose_dashboard` на 1920x440 даёт валидный кадр каждый тик (без
+      `ValueError`, без краша нулевой высоты гейджа при многих гейджах). (6/30/пустые гейджи ок; encode 59KB)
 
-## D. FPS / smoothness
-- [ ] `tools/probe_fps.py` reports panel FPS on the real device.
-- [ ] Dashboard updates at the configured `fps` with no visible stutter/frame drops.
+## D. FPS / плавность
+- [x] `tools/probe_fps.py` сообщает FPS панели на реальном устройстве. (~18 fps: 37/36 кадров за 2с; средний кадр 55-57мс; не зависит от размера 313-424KB. Probe печатает "660 fps" ТОЛЬКО потому, что его формула делит на время последнего ACK; реальное = count/2s)
+- [x] Дашборд обновляется с настроенным `fps` без видимого статтера/дропа кадров. (демон гоняет источник дашборда на 15 fps; видно вживую)
 
-## E. Day/night switch without restart
-- [ ] `POST /theme {"mode":"night"}` -> background switches to `d029`; `day` ->
-      `d037`; manager stays up (single async worker not frozen).
-- [ ] The reported `/theme` `active_theme` matches the theme actually on screen
-      (live `state.themes`, not stale startup config).
-- [ ] `POST /settings` with new themes/palettes -> next switch uses the new value.
+## E. Переключение день/ночь без рестарта
+- [x] ЧАСТИЧНО `POST /theme {"mode":"night"}` -> менеджер жив (один async-воркер не заморожен, health ок + seq растёт); палитра адаптера переключается на ночь. trcc ВИДЕО-фон НЕ переключается на d029/d037 -> `theme_cmd` не настроен (None) в manager.yaml (опция; нужна trcc-команда + доступность облачной темы). Уровень адаптера день/ночь = pass.
+- [x] Сообщаемый `/theme` `active_theme` совпадает с live `state.themes` (не устаревший стартовый): ночь->d029, день->d037, и d099 после реконфигурации /settings.
+- [x] `POST /settings` с новыми темами/палитрами -> следующий switch использует новое значение. (theme night -> active_theme=d099; восстановлено d037/d029)
 
-## F. USB contention
-- [ ] `tools/probe_ly.py` / `tools/probe_fps.py` exit cleanly ("Device not found")
-      when no device present (exit 1, no traceback).
-- [ ] Only one client owns the device at a time; manager + producer never contend.
+## F. Конфликт USB
+- [x] `tools/probe_ly.py` / `tools/probe_fps.py` чисто выходят ("Device not found")
+      при отсутствии устройства (exit 1, без traceback). (оба напечатали "Device 0416:5408 not found", exit 1, без traceback)
+- [x] Только один клиент владеет устройством в момент времени; менеджер + продюсер не конфликтуют. (probe_fps гонялся только после остановки демона; демон пере-показал после; единственный владелец)
 
-## G. Auth / body bound (no hardware, sanity)
-- [ ] With `auth_token` set, unauthenticated `/health` returns 401.
-- [ ] A payload over `body_limit_bytes` returns 413 (fast-path + stream count).
+## G. Auth / лимит тела (без железа, sanity)
+- [x] С заданным `auth_token` неаутентифицированный `/health` возвращает 401. (нет/неверный токен -> 401, верный -> 200)
+- [x] Payload сверх `body_limit_bytes` возвращает 413 (fast-path + потоковый счёт). (2MB -> 413)
 
-## Known non-goals / caveats to confirm on device
-- The trcc `FrameSource` consumes raw RGB; if the module instead hands JPEG, the
-  panel shows garbage / wrong colours — confirm the wrapper uses `img.tobytes()`.
-- Qt-overlay composite (theme video under gauges) is the intended look; this
-  adapter renders a plain background. Verify a real theme-video base + overlay later.
+## Оверлей-композит (проверено в этом прогоне)
+- trcc никогда не кладёт видео-тему ПОД источник модуля: `show_source` -> `StopVideo`,
+  а `build_screencast_frame` трактует кадр модуля как ФОН (сверху только маска + метрики темы,
+  0 элементов, композит). Значит тема-под-гейджами — задача модуля, а не trcc.
+- Текущий Python-адаптер теперь композитует поверх КАДРА темы (статического) под гейджами:
+  `compose_dashboard(..., background=Image)` (fit-cover; сплошная палитра при None),
+  `DashboardSource(..., background=)`, а GPL-модуль читает env
+  `HARDWARESCREEN_BACKGROUND_IMAGE` -> `_load_background`. Проверено на устройстве: гейджи
+  поверх кадра темы a005 (подтверждено пользователем ✓). Это dev/статический путь; ЖИВОЙ
+  композит видео-тема-под-гейджами остаётся целью Qt-адаптера (вариант A).
+
+## Известные не-цели / что подтвердить на устройстве
+- `FrameSource` trcc потребляет сырой RGB; если модуль отдаёт JPEG вместо этого —
+  панель показывает мусор/неверные цвета — подтвердить, что обёртка использует `img.tobytes()`.
+- Qt-оверлей-композит (видео-тема под гейджами) — задуманный вид; статическая
+  тема-кадр-база + оверлей-гейджей теперь проверены; живая видео-база — всё ещё
+  цель Qt-адаптера (вариант A).

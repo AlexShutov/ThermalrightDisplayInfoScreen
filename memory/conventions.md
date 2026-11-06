@@ -1,34 +1,35 @@
-# conventions.md — code, licenses, git, repo
+# conventions.md — код, лицензии, git, репозиторий
 
-## Runtime / code
-- Pure Python; deps `pyusb`, `pillow`, `psutil` (+ optional `trcc-linux`). No AI/LLM at build/run;
-  `pip install .` must run it.
-- `src/` layout, `pyproject.toml`, entry point `hardwarescreen = hardwarescreen.__main__:main`.
-- YAML-first config (`config.yaml`); add options to config before loading in `config.py`.
-- Keep platform specifics (ffmpeg hwaccel, headless Qt `QT_QPA_PLATFORM=offscreen`, DPI/devicePixelRatio,
-  sensors temp branch, Python version, udev/systemd) behind `config.py` so the port is config-only.
-- License header in `.py` files: `SPDX-License-Identifier: MIT`.
-- Probes (`tools/probe_ly.py`, `tools/probe_fps.py`) are dev tools, not shipped.
+## Рантайм / код
+- Чистый Python; зависимости `pyusb`, `pillow`, `psutil` (+ опционально `trcc-linux`). Без AI/LLM на
+  сборке/запуске; `pip install .` должно его запускать.
+- Раскладка `src/`, `pyproject.toml`, точка входа `hardwarescreen = hardwarescreen.__main__:main`.
+- YAML-первичный конфиг (`config.yaml`); добавлять опции в конфиг до загрузки в `config.py`.
+- Держать платформенные особенности (ffmpeg hwaccel, headless Qt `QT_QPA_PLATFORM=offscreen`,
+  DPI/devicePixelRatio, ветку температуры в `sensors`, версию Python, udev/systemd) за `config.py`,
+  чтобы порт был конфиг-онли.
+- Заголовок лицензии в `.py`-файлах: `SPDX-License-Identifier: MIT`.
+- Пробы (`tools/probe_ly.py`, `tools/probe_fps.py`) — dev-инструменты, не поставляются.
 
-## Licenses
-- Our code = **MIT**. `trcc-linux` and the **Qt adapter module** = **GPL-3.0**, external integrations
-  (subprocess/installed dependency). Never copy their code into our MIT sources.
+## Лицензии
+- Наш код = **MIT**. `trcc-linux` и **модуль Qt-адаптера** = **GPL-3.0**, внешние интеграции
+  (субпроцесс/установленная зависимость). Никогда не копировать их код в наши MIT-исходники.
 
-## Git / commit policy
-- One commit per task; message reads like the task's description. Commit each task when finished.
-- Manual commands compared to trcc repo's own memory convention (its CLAUDE.md startup/wrap-up loop).
+## Git / политика коммитов
+- Один коммит на задачу; сообщение читается как описание задачи. Коммитить задачу, когда она готова.
+- Ручные команды сверены с собственной конвенцией памяти репо trcc (его цикл старта/завершения CLAUDE.md).
 
-## Repo
-- Public: `github.com/AlexShutov/ThermalrightDisplayInfoScreen`.
-- Commits: `47ba71c` (trcc engine + daemon), `322765b` (full-res 1920x440 render),
-  `b9f3a38` (licenses README), `fd84893` (stub module), `3c24f89` (theme catalog PDF).
-- `trcc_themes_catalog.pdf` — WB-style grid of all 210 themes with previews (14 pages), committed.
-- **`ActivityProgressRingsQt`** (public repo, `github.com/AlexShutov/ActivityProgressRingsQt`) —
-  the Apple-style Activity Rings work moved OUT of `hardwarescreen` into a standalone repo and
-  re-wired as a **git submodule** here. Its history (one commit
-  per task): Pillow renderer + previews → pure focus-shift timeline model + tests → Qt focus
-  preview + assets. Package `activityrings` (`src/activityrings/`), MIT; PySide6 is an optional
-  `qt` extra for the preview. In the main repo the submodule lives at `ActivityProgressRingsQt/`;
-  the former `src/hardwarescreen/rings*.py`, `tests/test_rings_focus.py`,
-  `tools/*rings*preview.py`, and `docs/rings*`/`activity_rings_compare.pdf` were removed.
-  Submodule update: `git submodule update --init --recursive`.
+## Репозиторий
+- Публичный: `github.com/AlexShutov/ThermalrightDisplayInfoScreen`.
+- Коммиты: `47ba71c` (trcc engine + daemon), `322765b` (рендер в полном разрешении 1920x440),
+  `b9f3a38` (licenses README), `fd84893` (модуль-заглушка), `3c24f89` (каталог тем PDF).
+- `trcc_themes_catalog.pdf` — WB-стиль сетка всех 210 тем с превью (14 страниц), закоммичен.
+- **`ActivityProgressRingsQt`** (публичный репозиторий, `github.com/AlexShutov/ActivityProgressRingsQt`) —
+  работа с Activity Rings в стиле Apple вынесена ИЗ `hardwarescreen` в отдельный репозиторий и
+  пере-подключена здесь как **git-сабмодуль**. Его история (один коммит на задачу):
+  Pillow-рендерер + превью → чистая модель focus-shift timeline + тесты → Qt-превью focus + ассеты.
+  Пакет `activityrings` (`src/activityrings/`), MIT; PySide6 — опциональный `qt`-экстра для превью.
+  В основном репо сабмодуль лежит в `ActivityProgressRingsQt/`; бывшие
+  `src/hardwarescreen/rings*.py`, `tests/test_rings_focus.py`,
+  `tools/*rings*preview.py` и `docs/rings*`/`activity_rings_compare.pdf` удалены.
+  Обновление сабмодуля: `git submodule update --init --recursive`.

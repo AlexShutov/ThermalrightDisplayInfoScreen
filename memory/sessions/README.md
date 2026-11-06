@@ -1,8 +1,8 @@
-# memory/sessions/ — archived session handoffs
+# memory/sessions/ — архивированные передачи сессий
 
-Immutable, dated snapshots of the outgoing `SESSION.md` content (one per session wrap-up).
-They are history, not live state. Read on demand when `SESSION.md` references a prior session.
+Неизменяемые, датированные снимки исходящего содержимого `SESSION.md` (по одному на завершение сессии).
+Это история, а не живое состояние. Читать по требованию, когда `SESSION.md` ссылается на прошлую сессию.
 
-| Date | Slug | Topic |
-|------|------|-------|
-| 2026-11-04 | theme-manager-planning | Planning: theme-manager + Qt-adapter architecture, tech stack, hardware, memory system |
+| Дата | Slug | Тема |
+|------|------|------|
+| 2026-11-04 | theme-manager-planning | Планирование: архитектура менеджера тем + Qt-адаптера, тех-стек, железо, система памяти |

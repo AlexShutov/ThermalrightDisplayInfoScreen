@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hardwarescreen"
 version = "0.1.0"
-description = "Reactive, reconnect-aware dashboard app for the Thermalright Trofeo Vision 11.3 LCD (USB 0416:5408, LY)."
+description = "Реактивный, с переподключением, дашборд для Thermalright Trofeo Vision 11.3 LCD (USB 0416:5408, LY)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -20,10 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Ready-made Control Center (GPL-3.0) for advanced themes/video, integrated as an
-# external engine. Not required for the portable core path (our own LY transport).
+# Готовый Control Center (GPL-3.0) для продвинутых тем/видео, интегрирован как
+# внешний движок. Не обязателен для портативного ядра (наш собственный LY-транспорт).
 trcc = ["trcc-linux>=9.12"]
-# Dev / quality harness (lint, type-check, tests). Not required to run the app.
+# Harness для dev/качества (lint, type-check, тесты). Не обязателен для запуска приложения.
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.10", "httpx2>=2.16"]
 
 [project.scripts]

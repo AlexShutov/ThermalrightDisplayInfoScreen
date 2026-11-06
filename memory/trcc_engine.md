@@ -1,31 +1,31 @@
-# trcc_engine.md — trcc-linux engine + cloud theme facts
+# trcc_engine.md — движок trcc-linux + факты облачных тем
 
-## Engine (verified 9.12.0 on macOS dev)
-- Detects `0416:5408`, connects as **Trofeo Vision 11.3, 1920x440, model_id 69** — cross-validates
-  our handshake/PM=69. `display load-image` sends frames (52387 bytes observed).
-- The persistent engine is **`trcc daemon`** (owns USB, serves IPC socket, renders + keeps the panel
-  updated). One-shot `display play|load-image|serve` are triggers that auto-spawn the daemon when none
-  is running; NOT standalone long-running processes.
-- We still layer `supervise.py` on top so USB reconnect is our responsibility.
-- Daemon hang: re-fetching a poisoned cache (e.g. `e005.mp4` cached as 404 HTML) can stall; retry
-  `display play` recovers.
+## Движок (проверен 9.12.0 на macOS dev)
+- Детектит `0416:5408`, подключается как **Trofeo Vision 11.3, 1920x440, model_id 69** —
+  перекрёстно валидирует наш handshake/PM=69. `display load-image` шлёт кадры (наблюдалось 52387 байт).
+- Постоянный движок — **`trcc daemon`** (владеет USB, обслуживает IPC-сокет, рендерит + держит панель
+  обновлённой). Разовые `display play|load-image|serve` — это триггеры, авто-спавнящие демон, когда
+  ни один не запущен; НЕ отдельные долгоживущие процессы.
+- Мы всё равно кладём поверх `supervise.py`, чтобы переподключение USB было нашей ответственностью.
+- Зависание демона: повторная загрузка отравленного кэша (напр. `e005.mp4`, закэшированный как 404 HTML)
+  может подвесить; повторный `display play` восстанавливает.
 
-## Cloud themes (background MP4s)
-- Catalog library for this panel = `bj1920440` (resolution library `1920440`).
-  Base URLs: China `http://www.czhorde.com/tr/bj1920440/`, Intl `www.czhorde.cc`.
-  Video URL `{base}{id}.mp4`; directory listing blocked (IIS 403.14).
-- Scan of catalog (298 ids): **210 real themes** (Gallery 50, Tech 20, HUD 50, Light 40, Nature 50);
-  78 = 404; Aesthetic `y*` are ~3 KB placeholders (not real).
-- Cloud video playback needs **ffmpeg** (not QtMultimedia); local themes need **7z** (p7zip).
-- Preview thumbnails extracted from vendor archive `web/1920440.7z` -> `/tmp/webpreviews/*.png` (120x120).
+## Облачные темы (фоновые MP4)
+- Библиотека каталога для этой панели = `bj1920440` (библиотека разрешений `1920440`).
+  Базовые URL: Китай `http://www.czhorde.com/tr/bj1920440/`, Intl `www.czhorde.cc`.
+  URL видео `{base}{id}.mp4`; листинг каталога закрыт (IIS 403.14).
+- Скан каталога (298 id): **210 реальных тем** (Gallery 50, Tech 20, HUD 50, Light 40, Nature 50);
+  78 = 404; эстетичные `y*` — плейсхолдеры ~3 KB (не реальные).
+- Воспроизведению облачного видео нужен **ffmpeg** (не QtMultimedia); локальным темам — **7z** (p7zip).
+- Превью-миниатюры извлечены из вендорского архива `web/1920440.7z` -> `/tmp/webpreviews/*.png` (120x120).
 
-## Recognized real theme ids seen on panel
-c001, a026, c066, d037, d036 (night), d029 (night). **Day target `d037`, night target `d029`.**
+## Распознанные реальные id тем на панели
+c001, a026, c066, d037, d036 (ночь), d029 (ночь). **Дневная цель `d037`, ночная цель `d029`.**
 
-## Verdict on Raspberry Pi hardware
-- Pi 3 Model B (4xA53 1.2GHz, 1GB, 4xUSB): good "golden middle" — no OTG issue, 1GB RAM.
-- Pi 5 (4xA76 2.4GHz, 4/8GB): overqualified, production target (present, use it).
-- Orange Pi 6 Plus (RK3588): future target (not arrived).
-- Pi Zero 2 W (512MB): borderline, experimental only; needs HW decode, low fps, gpu_mem.
-- Pi Zero (single-core): NOT supported.
-- Dev + runtime today = **macOS** (Trofeo is USB here); port to Pi later is config-only.
+## Вердикт по железу Raspberry Pi
+- Pi 3 Model B (4xA53 1.2GHz, 1GB, 4xUSB): хорошая «золотая середина» — без проблемы OTG, 1GB RAM.
+- Pi 5 (4xA76 2.4GHz, 4/8GB): с запасом, производственная цель (есть, использовать).
+- Orange Pi 6 Plus (RK3588): будущая цель (не приехала).
+- Pi Zero 2 W (512MB): на грани, только экспериментально; нужен HW decode, низкий fps, gpu_mem.
+- Pi Zero (одно ядро): НЕ поддерживается.
+- Dev + runtime сегодня = **macOS** (Trofeo здесь на USB); порт на Pi позже — конфиг-онли.

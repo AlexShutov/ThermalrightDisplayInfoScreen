@@ -1,22 +1,23 @@
-# hardware_protocol.md — device + wire facts (measured, do not re-derive)
+# hardware_protocol.md — факты устройство + протокол (измерены, не перевыводить)
 
-- Device: VID `0x0416` PID `0x5408`, `USBDISPLAY`, LY bulk.
-- Endpoints: write EP `0x09` OUT, read EP `0x81` IN (auto-detected; do not hardcode `_EP_WRITE`).
-- Handshake: write 2048 -> read 512. Validate `resp[0]==3, resp[1]==0xFF, resp[8]==1`.
-  `PM = 64 + max(resp[20], 1)` (clamp raw<=3 to 1), `SUB = resp[22] + 1`.
-  `PM==69` -> Trofeo Vision 11.3 (marketed 1920x400; handshake reports 1920x440).
-- Frame send: payload -> 512-byte chunks (16-byte header + 496 data). Header:
+- Устройство: VID `0x0416` PID `0x5408`, `USBDISPLAY`, LY bulk.
+- Эндпоинты: write EP `0x09` OUT, read EP `0x81` IN (авто-детект; не хардкодить `_EP_WRITE`).
+- Handshake: записать 2048 -> прочитать 512. Проверять `resp[0]==3, resp[1]==0xFF, resp[8]==1`.
+  `PM = 64 + max(resp[20], 1)` (clamp raw<=3 к 1), `SUB = resp[22] + 1`.
+  `PM==69` -> Trofeo Vision 11.3 (маркетинг 1920x400; handshake сообщает 1920x440).
+- Отправка кадра: payload -> чанки по 512 байт (16 байт заголовок + 496 данных). Заголовок:
   `b0=0x01, b1=0xFF, u32@2=total_size, u16@6=data_len, b8=0x01(LY), u16@9=num_chunks, u16@11=idx`.
-  Pad chunk count to multiple of 4. Write 4096-byte writes on `0x09`, then 512-byte ACK on `0x81`.
-- Frame-size ceiling: JPEG <= 450000 bytes. Above ~450 KB the panel silently freezes/drops
-  (measured: Q~80/443 KB shows; Q~88/553 KB freezes). Never exceed — enforce quality/scale shrink.
-  Do NOT rely on the ACK to detect a drop (ACK returns even for dropped frames).
-- Frame-rate ceiling: ~18 FPS (write+ACK round-trip ~55 ms), ~independent of frame size in budget.
-  Vendor design `idle 2 / active 15 FPS`.
-- Revert-to-logo: panel returns to logo ~2-3 s after last frame -> keepalive every ~1.5-2 s.
+  Паддинг числа чанков до кратного 4. Писать записями по 4096 байт на `0x09`, затем ACK на 512 байт на `0x81`.
+- Потолок размера кадра: JPEG <= 450000 байт. Выше ~450 KB панель молча зависает/роняет
+  (измерено: Q~80/443 KB показывает; Q~88/553 KB зависает). Никогда не превышать — включить ужатие
+  качества/масштаба. **Не** полагаться на ACK для детекта потери (ACK приходит даже для потерянных кадров).
+- Потолок частоты: ~18 FPS (write+ACK круг ≈ 55 мс), ~не зависит от размера кадра в бюджете.
+  Фирменный дизайн `idle 2 / active 15 FPS`.
+- Возврат-к-логотипу: панель возвращается к логотипу через ~2-3 с после последнего кадра -> keepalive
+  каждые ~1.5-2 с.
 
-## Containment rules
-- USB lifecycle only in `src/hardwarescreen/supervise.py`. Don't scatter it.
-- `max_frame_bytes = 450000` everywhere; keepalive default `keepalive_s = 2.0`.
-- Usb contention: thin client `hardwarescreen run` holds the device -> trcc daemon gets `Access denied`.
-  Stop the client to free USB.
+## Правила контейнирования
+- Жизненный цикл USB — только в `src/hardwarescreen/supervise.py`. Не разбрасывать.
+- `max_frame_bytes = 450000` везде; keepalive по умолчанию `keepalive_s = 2.0`.
+- Конфликт USB: тонкий клиент `hardwarescreen run` держит устройство -> trcc daemon получает
+  `Access denied`. Остановить клиент, чтобы освободить USB.
