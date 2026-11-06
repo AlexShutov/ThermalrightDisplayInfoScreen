@@ -19,7 +19,6 @@ this module (and ``hardwarescreen``) does not require Qt; only the render path n
 from __future__ import annotations
 
 import os
-import time
 from math import exp
 
 from PIL import Image
@@ -100,7 +99,8 @@ class LinearDashboardRenderer:
         self._footer = footer
         self._gap = gap
         self._ids: list[str] = []
-        self._t0 = time.monotonic()
+        self._anim_t = 0.0
+        self._anim_step = 1.0 / max(1.0, fps)
         self._progress: list[float] = []
         self._last_time: dict[int, float] = {}
 
@@ -153,8 +153,14 @@ class LinearDashboardRenderer:
     ) -> bytes:
         """Render one eased frame and return raw RGB bytes (``w*h*3``)."""
         self._size = (int(size[0]), int(size[1]))
-        now = time.monotonic()
-        t = now - self._t0
+        # Advance the animation clock by one step per RENDER, not per wall-clock
+        # tick: the caller re-renders only on data change (+keepalive), so a frame
+        # stays byte-identical between changes and trcc never floods the panel
+        # with a new (churning) frame every tick.  This keeps the dashboard
+        # reactive (AGENTS) while still easing the selection/value on change.
+        self._anim_t += self._anim_step
+        now = self._anim_t
+        t = self._anim_t
         pal = _palette(palette)
         specs = self._specs(setup or [], values or {}, pal)
         ids = [s["id"] for s in specs]
