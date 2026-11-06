@@ -15,7 +15,7 @@ import os
 import threading
 import time
 
-from PIL import Image, ImageOps
+from PIL import Image
 from trcc.adapters.modules._base import BaseModule
 from trcc.core.models import RawFrame
 from trcc.core.ports import FrameSource
@@ -79,8 +79,6 @@ def _resolve_px_per_mm(size: tuple[int, int], env_value: float | None) -> float:
 COMPOSITE_RIGHT_MARGIN_MM = 5.0
 # Зазор между левым линейным регионом и правой зоной колец, px.
 COMPOSITE_INNER_GAP_PX = 8
-# Цвет фона кадра, если не задана тема-картинка (палитра manager'а).
-_DEFAULT_BACKGROUND = (16, 18, 24)
 
 
 def _composite_enabled() -> bool:
@@ -131,11 +129,12 @@ class CompositeDashboardRenderer:
     """Композитный ``frame_renderer``: линейный индикатор слева + кольца справа.
 
     Контракт ``DashboardSource.frame_renderer``: ``__call__(setup, values, palette,
-    size, background) -> bytes`` (RGB ``w*h*3``). Обёрнутый Qt-линeйный рендерер
-    рисует ЛЕВЫЙ регион (RGBA-оверлей), ``activityrings.render_gauge_rings`` — зону
-    колец справа (кольцо на каждый датчик); всё накладывается на фон (тему) и
-    возвращается одним непрозрачным кадром. Если ``activityrings`` недоступен —
-    композит деградирует до линейного индикатора в левом регионе.
+    size, background) -> bytes`` (RGBA ``w*h*4`` — ПРОЗРАЧНЫЙ оверлей). Обёрнутый
+    Qt-линeйный рендерер рисует ЛЕВЫЙ регион (RGBA-оверлей), а
+    ``activityrings.render_gauge_rings`` — зону колец справа (кольцо на каждый датчик);
+    всё компонуется на прозрачном слое и возвращается единым RGBA-оверлеем. trcc
+    кладёт его ПОВЕРХ живой темы панели, поэтому фон НЕ закрашиваем — сквозь
+    прозрачные места видна тема (то же поведение, что у линейного пути).
 
     Кольца повторяют данные линейного: для каждого датчика ``min/max`` → доля,
     цвет — ``value_color`` (при цветовой палитре) или общий акцент палитры.
@@ -159,34 +158,16 @@ class CompositeDashboardRenderer:
 
     def __call__(self, setup, values, palette, size, background=None) -> bytes:
         pal = _palette(palette or {})
-        base = self._make_base(self._size, background, pal)
+        canvas = Image.new("RGBA", self._size, (0, 0, 0, 0))
         if (setup or []) and (values or {}):
             raw_left = self._linear(setup, values, palette, self._left_size, None)
             left_img = self._bytes_to_image(raw_left, self._left_size)
             if left_img is not None:
-                if left_img.mode == "RGBA":
-                    base.paste(left_img, (0, 0), left_img)
-                else:
-                    base.paste(left_img, (0, 0))
+                canvas.alpha_composite(left_img, (0, 0))
             rings_img = self._render_rings(setup, values, pal)
             if rings_img is not None:
-                if rings_img.mode == "RGBA":
-                    base.paste(rings_img, (self._rings_x, 0), rings_img)
-                else:
-                    base.paste(rings_img, (self._rings_x, 0))
-        return base.tobytes()
-
-    @staticmethod
-    def _make_base(size, background, pal) -> Image.Image:
-        if background is not None:
-            try:
-                return ImageOps.fit(
-                    background.convert("RGB"), size, Image.Resampling.LANCZOS
-                )
-            except Exception:  # noqa: BLE001 - плохая тема не должна ронять кадр
-                pass
-        background_color = tuple(pal.get("background") or _DEFAULT_BACKGROUND)
-        return Image.new("RGB", size, background_color)
+                canvas.alpha_composite(rings_img, (self._rings_x, 0))
+        return canvas.tobytes()
 
     @staticmethod
     def _bytes_to_image(raw: bytes, size: tuple[int, int]) -> Image.Image | None:

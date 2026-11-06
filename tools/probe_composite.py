@@ -112,6 +112,7 @@ renderer = CompositeDashboardRenderer(
 
 from PIL import Image  # noqa: E402
 
+# «Тема» — синтетический фон, поверх которого композит кладётся как прозрачный оверлей.
 background = Image.new("RGB", SIZE)
 for y in range(SIZE[1]):
     tone = 40 + int(28 * y / SIZE[1])
@@ -120,6 +121,9 @@ for y in range(SIZE[1]):
 frame = renderer(setup, values, palette, SIZE, background)
 for _ in range(60):  # прогреем «добегающую» анимацию значений до установившихся
     frame = renderer(setup, values, palette, SIZE, background)
-print("frame bytes:", len(frame), "expected:", SIZE[0] * SIZE[1] * 3)
-Image.frombytes("RGB", SIZE, frame).save("/tmp/composite_probe.png")
+print("frame bytes:", len(frame), "expected:", SIZE[0] * SIZE[1] * 4)
+overlay = Image.frombytes("RGBA", SIZE, frame)
+combined = background.convert("RGBA").copy()
+combined.alpha_composite(overlay)
+combined.convert("RGB").save("/tmp/composite_probe.png")
 print("saved /tmp/composite_probe.png")

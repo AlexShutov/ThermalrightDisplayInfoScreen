@@ -103,7 +103,7 @@ def test_composite_regions_right_margin(composite):
     assert regions["left_size"][1] == 440
 
 
-def test_composite_renderer_emits_rgb_frame(composite):
+def test_composite_renderer_emits_transparent_overlay(composite):
     CompositeDashboardRenderer, _ = composite
     from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
 
@@ -130,7 +130,7 @@ def test_composite_renderer_emits_rgb_frame(composite):
     for _ in range(5):
         frame = renderer(setup, values, palette, size, None)
     assert isinstance(frame, bytes)
-    assert len(frame) == size[0] * size[1] * 3
+    assert len(frame) == size[0] * size[1] * 4  # RGBA-оверлей (прозрачный фон)
     assert frame != b"\x00" * len(frame)  # хоть какое-то содержимое
 
 
@@ -144,4 +144,4 @@ def test_composite_renderer_empty_setup_is_safe(composite):
     )
     renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
     frame = renderer([], {}, {}, size, None)
-    assert len(frame) == size[0] * size[1] * 3
+    assert len(frame) == size[0] * size[1] * 4
