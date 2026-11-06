@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 DEFAULT_SIZE = (1920, 440)
 
@@ -110,10 +110,19 @@ def compose_dashboard(
     values: dict[str, Any],
     palette: dict,
     size: tuple[int, int] = DEFAULT_SIZE,
+    background: Image.Image | None = None,
 ) -> Image.Image:
+    """Compose gauges over *background* (a theme frame) when given, else a solid
+    palette fill. *background* is fit cover to *size* so the theme photo/video
+    frame shows through behind the gauges (the overlay composite)."""
     w, h = size
     c, specs = gauge_layout(setup, values, palette, size)
     img = Image.new("RGB", size, c["background"])
+    if background is not None:
+        bg = background.convert("RGB")
+        if bg.size != size:
+            bg = ImageOps.fit(bg, size)
+        img = bg.copy()
     d = ImageDraw.Draw(img)
     if not specs:
         _text(d, "no data", w // 2 - 60, h // 2 - 16, size=32, fill=c["muted"])

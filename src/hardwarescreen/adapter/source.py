@@ -7,14 +7,22 @@ to the panel; trcc composites and encodes it. We keep only the newest composite
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+from PIL import Image
+
 from .dashboard import DEFAULT_SIZE, compose_dashboard
 from .poller import BridgePoller
 
 
 class DashboardSource:
-    def __init__(self, poller: BridgePoller, size: tuple[int, int] = DEFAULT_SIZE):
+    def __init__(
+        self,
+        poller: BridgePoller,
+        size: tuple[int, int] = DEFAULT_SIZE,
+        background: Image.Image | None = None,
+    ):
         self._poller = poller
         self._w, self._h = size
+        self._background = background
         self._state: dict | None = None
         self._frame: bytes | None = None
         self._closed = False
@@ -36,6 +44,7 @@ class DashboardSource:
             st.get("values") or {},
             st.get("palette") or {},
             (self._w, self._h),
+            self._background,
         )
         self._frame = img.tobytes()
         return self._frame

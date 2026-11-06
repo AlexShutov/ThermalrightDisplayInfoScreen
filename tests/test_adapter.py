@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+from PIL import Image
+
 from hardwarescreen.adapter.dashboard import compose_dashboard, gauge_layout, hex_to_rgb
 from hardwarescreen.adapter.driver import AdapterDriver, bridge_has_data
 from hardwarescreen.adapter.poller import BridgePoller
@@ -132,6 +134,30 @@ def test_compose_dashboard_non_numeric_value_renders():
     assert img.size == SIZE
 
 
+def test_compose_dashboard_overlays_gauges_on_theme_frame():
+    red = Image.new("RGB", SIZE, (200, 30, 30))
+    img = compose_dashboard(
+        [{"id": "cpu", "label": "CPU", "unit": "%", "min": 0, "max": 100}],
+        {"cpu": 50.0},
+        {},
+        SIZE,
+        background=red,
+    )
+    assert img.size == SIZE
+    # A pixel that is not a gauge or label (top-left corner) keeps the theme
+    # frame's colour, not the palette background.
+    assert img.getpixel((2, 2)) == red.getpixel((2, 2))
+
+
+def test_dashboard_source_with_theme_background_uses_it_as_base():
+    red = Image.new("RGB", (16, 16), (200, 30, 30))
+    src = DashboardSource(BridgePoller(FakeStore()), (16, 16), background=red)
+    frame = Image.frombytes("RGB", (16, 16), src.latest())
+    # Top-left pixel carries the theme frame, not the palette background
+    # (#111318 == (17, 19, 24)).
+    assert frame.getpixel((0, 0)) == red.getpixel((0, 0)) == (200, 30, 30)
+
+
 # -- layout / compose --------------------------------------------------------
 def test_gauge_layout_pct_and_text():
     c, specs = gauge_layout(
@@ -240,3 +266,31 @@ def test_bridge_has_data():
     assert bridge_has_data(_bridge()) is True
     assert bridge_has_data({"seq": 1, "setup": [], "values": {}}) is False
     assert bridge_has_data(None) is False
+
+
+def test_driver_targets_the_panel_key_not_the_module_key():
+    # regression: the background belongs to a PANEL device key, not the module
+    # key the adapter was constructed with. A module that learns the panel key
+    # only once a panel attaches passes it at update() time.
+    bg = FakeBackground()
+    drv = AdapterDriver(bg, object())  # constructor key = "dashboard"
+    drv.update(_bridge(), attached=True, panel_key="0416:5408")
+    assert drv.shown is True
+    assert bg.shown[0][0] == "0416:5408"
+    drv.update({"seq": 2, "setup": [], "values": {}}, attached=True,
+               panel_key="0416:5408")
+    assert drv.shown is False
+    assert bg.ended == ["0416:5408"]
+
+
+def test_driver_handles_panel_key_change_while_shown():
+    # a panel hot-swap (device key changes) while we stay shown must hand the old
+    # panel back to its theme and take the new one.
+    bg = FakeBackground()
+    drv = AdapterDriver(bg, object())
+    drv.update(_bridge(), attached=True, panel_key="0416:5408")
+    assert bg.shown == [("0416:5408", drv._source, 15.0)]
+    drv.update(_bridge(), attached=True, panel_key="0416:5409")
+    assert bg.ended == ["0416:5408"]
+    assert bg.shown[-1][0] == "0416:5409"
+    assert drv.shown_key == "0416:5409"
