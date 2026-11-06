@@ -6,19 +6,21 @@ paints each gauge's ``label``/``value`` text over it.
 
 Bar geometry (size + position) is delegated to a ``BaseLayoutManager`` — like Android's
 layout manager, a separate object measures the items inside the panel so the renderer
-only draws at the returned rects.  The selection layout (``is_selection_enabled``)
-grows the focused bar in thickness while the others keep their size, sizing the stack
-so it never overflows and an extreme bar keeps ~2 mm to the edge; a static layout
-(``is_selection_enabled=False``) draws equal-height bars.  The highlight (green
-outline + bounded under-glow) wraps the ACTIVE (filled) part of the bar only.
+only draws at the returned rects.  The measured geometry is always constant (every
+bar the same height, the same uniform gap) regardless of selection; the selection
+layout (``is_selection_enabled``) is a *render-side* effect: the non-selected bars are
+dimmed, the selected bar grows in thickness, is pushed onto the foreground through
+the overlay z-order, and gets a green glow.  Bars are painted with a ``QPainter`` in
+increasing z-order (dimmed neighbours first, the selected bar last on top), and the
+green glow is a symmetric layered halo drawn behind the whole selected bar — fixing
+the old lopsided under-glow that was clipped to the filled part.
 
 Both the selection (focus) and the value (progress) transitions are eased over time.
-Rendering paints the bars directly into a standalone ``QImage`` with a ``QPainter`` —
-no ``QApplication`` and no ``QGraphicsScene`` — then hands the frame to Pillow for the
-label/value text.  QImage painting is reentrant and does not touch the GUI, and text
-needs no Qt app, so the whole render is thread-safe inside the trcc daemon's native
-display loop.  ``activity_linear_indicator`` (the Widgets submodule) is imported
-lazily, so importing this module (and ``hardwarescreen``) does not require Qt.
+Rendering paints the bars into a standalone ``QImage`` with a ``QPainter`` — no
+``QApplication`` and no ``QGraphicsScene`` — then hands the frame to Pillow for the
+label/value text.  QImage painting is reentrant and does not touch the GUI, so the
+whole render is thread-safe inside the trcc daemon's native display loop.  Qt is
+imported lazily, so importing this module (and ``hardwarescreen``) does not require Qt.
 """
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
@@ -154,7 +156,8 @@ class LinearDashboardRenderer:
 
         n = len(specs)
         focus = [self._focus_factor(t, i, n) for i in range(n)]
-        # The selection layout grows the focused bar; a static layout ignores this.
+        # The measured geometry is always constant (equal height + gap); selection
+        # is a render-side effect (dim the others, grow + foreground the selected).
         layout = self._layout.measure(
             self._size[0],
             self._size[1],
@@ -165,20 +168,54 @@ class LinearDashboardRenderer:
         for i, spec in enumerate(specs):
             progress.append(self._eased_progress(i, spec["pct"] / 100.0, now))
 
+        from PySide6.QtCore import QRectF
         from PySide6.QtGui import QPainter
 
         img = self._make_image(pal, background)
+        selection_on = self._layout.is_selection_enabled
+        active = self._active_index(focus, selection_on)
+        focus_color = _focus_color()
+
+        # Grow the selected bar around its centre; non-selected bars keep the
+        # constant layout height, so all columns stay the same size when idle.
+        # Clamp the grown rect into the panel margins so the selected bar never
+        # overflows the panel at low gauge counts (it can only grow so tall).
+        panel_h = self._size[1]
+        margin = self._layout.edge_margin
+        rects: list[QRectF] = []
+        for i, geo in enumerate(layout.geometry):
+            f = focus[i] if selection_on else 0.0
+            scale = (1.0 + (self._layout.selection_scale - 1.0) * f) if selection_on else 1.0
+            h = geo.height * scale
+            cy = geo.center_y
+            top = max(float(margin), min(float(panel_h) - float(margin), cy - h / 2.0))
+            bottom = max(top, min(float(panel_h) - float(margin), cy + h / 2.0))
+            rects.append(QRectF(geo.x, top, geo.width, max(0.0, bottom - top)))
+
+        # Draw in increasing z-order: dimmed neighbours first, the selected bar (with
+        # its green glow) last, on top — the correct overlay z-buffer ordering.
+        order = sorted(
+            range(n),
+            key=lambda i: 100.0 if i == active else 1.0 + 2.0 * (focus[i] if selection_on else 0.0),
+        )
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
-        focus_color = _focus_color()
-        for i, spec in enumerate(specs):
-            f = self._focus_factor(t, i, n)
-            self._paint_bar(p, layout[i], progress[i], f, spec["color"], focus_color)
+        for i in order:
+            f = focus[i] if selection_on else 0.0
+            # Non-selected bars (f=0) fade toward dim; the selected one (f=1) is bright.
+            dim = (0.35 + 0.65 * f) if selection_on else 1.0
+            if selection_on and f > 0.0:
+                # Green glow/shadow cast around the selected bar (behind it).
+                self._paint_glow(p, rects[i], focus_color, f)
+            self._paint_bar(p, rects[i], progress[i], specs[i]["color"], dim)
         p.end()
 
         pil = self._qimage_to_pil(img)
         if specs:
-            self._paint_text_pil(pil, specs, layout, pal["text"])
+            self._paint_text_pil(
+                pil, specs, layout, pal["text"],
+                focus if selection_on else None, pal["background"],
+            )
         else:
             from PIL import ImageDraw
 
@@ -215,126 +252,6 @@ class LinearDashboardRenderer:
         raw = rgb.tobytes()
         return QImage(raw, w, h, w * 3, QImage.Format_RGB888)
 
-    def _paint_bar(self, p, geo, fr: float, f: float, color, focus_color) -> None:
-        from PySide6.QtCore import QRectF, Qt
-        from PySide6.QtGui import QBrush, QColor, QLinearGradient
-
-        color = QColor(*color)
-        left = geo.x
-        top = geo.y
-        length = geo.width
-        t = geo.height
-        radius = t / 2.0
-        track = QRectF(left, top, length, t)
-        fill = QRectF(left, top, length * max(0.0, min(fr, 1.0)), t)
-        focus = f > 0.0
-
-        # Under-glow beneath the ACTIVE (filled) part only: accent when idle,
-        # green when selected.  Never spans the empty track, so the highlight
-        # tracks the value rather than painting a full-width band.
-        if fill.width() > 0:
-            glow_color = focus_color if focus else (color.red(), color.green(), color.blue())
-            self._under_glow(
-                p,
-                fill,
-                glow_color,
-                t,
-                f if focus else 0.4,
-                bloom_px=22.0 if focus else 12.0,
-                alpha_base=56 if focus else 30,
-            )
-
-        # Backdrop track (low-alpha unfilled band).
-        bcol = QColor(color)
-        bcol.setAlpha(38)
-        p.setBrush(QBrush(bcol))
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(track, radius, radius)
-
-        # Fill (gradient colour) with rounded caps.
-        if fill.width() > 0:
-            g = QLinearGradient(left, 0, left + length, 0)
-            g.setColorAt(0.0, color.lighter(118))
-            g.setColorAt(0.12, QColor(color))
-            g.setColorAt(0.85, color.darker(96))
-            g.setColorAt(1.0, color.lighter(118))
-            p.setBrush(QBrush(g))
-            p.drawRoundedRect(fill, radius, radius)
-
-        # Selection: green glowing outline around the ACTIVE (filled) part only.
-        if focus and fill.width() > 0:
-            self._paint_outline(p, fill, focus_color, radius, f)
-
-    @staticmethod
-    def _paint_outline(p, rect, focus_color, radius: float, f: float) -> None:
-        """Green glowing outline around the focused bar (soft glow + bright core)."""
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QColor, QPen
-
-        c0 = QColor(*focus_color)
-        p.setBrush(Qt.NoBrush)
-        core = max(2.2, rect.height() * 0.05)
-        for mult, alpha in ((5.0, 26), (2.8, 60), (1.5, 120)):
-            c = QColor(c0)
-            c.setAlpha(int(alpha * f))
-            pen = QPen(c, core * mult)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            p.setPen(pen)
-            p.drawRoundedRect(rect, radius, radius)
-        c = QColor(c0)
-        c.setAlpha(int(255 * f))
-        pen = QPen(c, core)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.drawRoundedRect(rect, radius, radius)
-
-    @staticmethod
-    def _under_glow(p, rect, color, t: float, strength: float, *,
-                    bloom_px: float = 16.0, alpha_base: int = 30,
-                    seam_alpha: int = 0) -> None:
-        """Soft, bounded light blooming DOWNWARD from ``rect``'s bottom edge.
-
-        Thin horizontal layers drop a small ``bloom_px`` below the bar, narrowing
-        and fading with depth, and (when ``seam_alpha`` is set) a thin bright
-        strip hugs the lower edge.  ``strength`` (0..1) scales the alpha so the
-        glow fades in/out with the focus level.  Sized small on purpose — it must
-        read as a light cast under the bar, not a blob that swallows the bar.
-        """
-        from PySide6.QtCore import QRectF, Qt
-        from PySide6.QtGui import QColor
-
-        c0 = QColor(*color)
-        bottom = rect.bottom()
-        cx = rect.center().x()
-        hw0 = rect.width() / 2.0
-        p.setPen(Qt.NoPen)
-        layers = 9
-        for i in range(layers):
-            depth = 2.0 + i * (bloom_px / layers)
-            grow = 16.0 - i * (16.0 / (layers + 1))
-            c = QColor(c0)
-            c.setAlpha(int(alpha_base * strength * (1.0 - i / (layers + 1))))
-            p.setBrush(c)
-            lh = 3.0
-            w = 2.0 * (hw0 + grow)
-            p.drawRoundedRect(
-                QRectF(cx - hw0 - grow, bottom + depth, w, lh),
-                lh / 2.0,
-                lh / 2.0,
-            )
-        if seam_alpha > 0:
-            core = max(1.2, t * 0.04)
-            c = QColor(c0)
-            c.setAlpha(int(seam_alpha * strength))
-            p.setBrush(c)
-            p.drawRoundedRect(
-                QRectF(rect.left(), bottom, rect.width(), core),
-                core / 2.0,
-                core / 2.0,
-            )
-
     @staticmethod
     def _qimage_to_pil(img) -> Image.Image:
         from PySide6.QtGui import QImage
@@ -347,19 +264,99 @@ class LinearDashboardRenderer:
         return Image.frombuffer("RGB", (w, h), raw, "raw", "RGB", stride, 1)
 
     def _paint_text_pil(self, img: Image.Image, specs: list[dict],
-                        layout, text_color: tuple[int, int, int]) -> None:
+                        layout, text_color: tuple[int, int, int],
+                        focus: list[float] | None = None,
+                        bg: tuple[int, int, int] = (0, 0, 0)) -> None:
         from PIL import ImageDraw
 
         d = ImageDraw.Draw(img)
-        for spec, geo in zip(specs, layout.geometry, strict=True):
+        for idx, (spec, geo) in enumerate(zip(specs, layout.geometry, strict=True)):
+            if focus is not None:
+                # Non-selected labels dim with their bar; the selected label stays bright.
+                b = 0.35 + 0.65 * (focus[idx] if idx < len(focus) else 0.0)
+            else:
+                b = 1.0
+            # Blend the label toward the background so it dims with its bar.
+            col = (
+                int(round(text_color[0] * b + bg[0] * (1.0 - b))),
+                int(round(text_color[1] * b + bg[1] * (1.0 - b))),
+                int(round(text_color[2] * b + bg[2] * (1.0 - b))),
+            )
             cy = int(geo.center_y)
             left = int(geo.x)
             length = int(geo.width)
-            _pil_text(d, spec["label"], left + 14, cy - 16, size=26, fill=text_color)
+            _pil_text(d, spec["label"], left + 14, cy - 16, size=26, fill=col)
             font = _pil_font(26)
             value_w = d.textlength(spec["text"], font=font)
             _pil_text(d, spec["text"], left + length - 14 - int(value_w),
-                      cy - 16, size=26, fill=text_color)
+                      cy - 16, size=26, fill=col)
+
+    @staticmethod
+    def _paint_glow(p, rect, focus_color, strength: float) -> None:
+        """Symmetric green glow/shadow around the whole selected bar (not broken).
+
+        Layered rounded-rect strokes expand outward from the bar and fade, so the
+        light blooms evenly around every edge (no lopsided downward under-glow and
+        not clipped to the filled part).  ``strength`` (0..1) = focus level.
+        """
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QPen
+
+        c0 = QColor(*focus_color)
+        radius = max(2.0, rect.height() / 2.0)
+        core = max(2.0, rect.height() * 0.05)
+        p.setBrush(Qt.NoBrush)
+        # Soft halo: wide + faint -> narrow + bright.
+        for mult, alpha in ((11.0, 22), (7.0, 48), (4.2, 84), (2.4, 122)):
+            c = QColor(c0)
+            c.setAlpha(int(alpha * strength))
+            pen = QPen(c, core * mult)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.drawRoundedRect(rect, radius, radius)
+        # Bright core edge.
+        core_pen = QPen(QColor(c0.red(), c0.green(), c0.blue(), int(220 * strength)), core)
+        core_pen.setCapStyle(Qt.RoundCap)
+        core_pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(core_pen)
+        p.drawRoundedRect(rect, radius, radius)
+
+    @staticmethod
+    def _paint_bar(p, rect, fill_frac: float, color, dim: float) -> None:
+        """Draw one bar (low-alpha track + gradient fill), dimmed by ``dim`` (0..1)."""
+        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtGui import QBrush, QColor, QLinearGradient
+
+        t = rect.height()
+        radius = max(2.0, t / 2.0)
+        base = QColor(*color)
+        p.setPen(Qt.NoPen)
+        p.setOpacity(max(0.0, min(1.0, dim)))
+        # Backdrop track (low-alpha unfilled band).
+        bcol = QColor(base)
+        bcol.setAlpha(40)
+        p.setBrush(bcol)
+        p.drawRoundedRect(rect, radius, radius)
+        # Fill (gradient colour) with rounded caps, up to the value fraction.
+        frac = max(0.0, min(1.0, fill_frac))
+        if frac > 0:
+            fill = QRectF(rect.x(), rect.y(), rect.width() * frac, rect.height())
+            g = QLinearGradient(rect.x(), 0.0, rect.x() + rect.width(), 0.0)
+            g.setColorAt(0.0, base.lighter(118))
+            g.setColorAt(0.12, QColor(base))
+            g.setColorAt(0.85, base.darker(96))
+            g.setColorAt(1.0, base.lighter(118))
+            p.setBrush(QBrush(g))
+            p.drawRoundedRect(fill, radius, radius)
+        p.setOpacity(1.0)
+
+    def _active_index(self, focus: list[float], selection_on: bool):
+        """Index of the currently selected bar (the one with the highest focus)."""
+        if not selection_on or not focus:
+            return None
+        peak = max(focus)
+        return focus.index(peak) if peak > 1e-6 else None
 
     def _focus_factor(self, t: float, i: int, n: int) -> float:
         if n == 0:
