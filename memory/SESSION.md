@@ -57,6 +57,28 @@ F ✓, G ✓). Рантайм на данный момент: менеджер �
   **НЕ ЗАКОММИЧЕНО.**
 - **Правило языка:** в этом прогоне в `AGENTS.md` и `memory/` закреплено «правила/доки на русском,
   код на английском»; весь `AGENTS.md`, `README.md` и memory-файлы переведены на русский.
+- **Qt linear-indicator дашборд (этот прогон):** бары дашборда переписаны на Qt (PySide6) по аналогии с
+  Activity Rings — выделение (фокус), тень, плавное переключение (без прыжков), цвет активного контура
+  (`HARDWARESCREEN_FOCUS_COLOR`, по умолчанию `#00c85a`). Новый рендерер
+  `src/hardwarescreen/adapter/linear_dashboard.py` (`LinearDashboardRenderer`, MIT, ленивый Qt) пишет
+  кадр напрямую в `QImage`+`QPainter` **без `QApplication`/`QGraphicsScene`** — иначе в daemon trcc
+  сегфолт (сигнал 11); текст label/value рисуется PIL. `DashboardSource` получил опциональный
+  `frame_renderer`, GPL-модуль выбирает рендерер через `HARDWARESCREEN_RENDERER` (по умолчанию `qt`,
+  фолбэк — Pillow). Он же создаёт `activity_linear_indicator` (новый пакет сабмодуля).
+- **Сабмодуль переименован `ActivityProgressRingsQt` -> `DashboardWidgets`** (GitHub
+  `AlexShutov/DashboardWidgets`, pyproject name `dashboardwidgets`); там новый пакет
+  `src/activity_linear_indicator/` (`linear_focus.py` pure + `linear.py` Qt `LinearItem`), инструмент
+  `tools/qlinear_preview.py`, тесты `tests/test_linear_focus.py` (38 зелёных), README. Путь сабмодуля в
+  главном репо теперь `DashboardWidgets/` (`.gitmodules` + `.git/config` обновлены, editable пересобран
+  в `.venv-trcc`).
+- **Проверено на устройстве:** daemon trcc стабилен (PID без падений), `trcc status` →
+  `LCD 0 [0416:5408] showing: the Dashboard module`, `panel_keys: ('0416:5408',)`, исключений нет.
+  Баг-хунт по рендереру: найдены и исправлены MAJOR-зависание (easing прогресса замирал при смене цели
+  каждый кадр → экспоненциальное сглаживание) и MAJOR-переполнение (выделение вылезало в футер →
+  scale-to-fit в available-область) + minor (ignored background, «no data», выравнивание value).
+- **Закоммичено в главном репо:** `8d9820b` (интеграция Qt-рендерера + frame_renderer + wiring модуля
+  + поднятие указателя сабмодуля), `3c12ccc` (переименование сабмодуля в DashboardWidgets). Ветка
+  `web-contract-hardening` запушена в origin. ruff/mypy чисто, **71 pytest** прошло.
 
 ## Открытые вопросы (этот прогон)
 - Переключатель менеджер->trcc — это CLI `trcc display play <id>` (опция через `theme_cmd`);
@@ -72,10 +94,10 @@ F ✓, G ✓). Рантайм на данный момент: менеджер �
 - **Будущее** железа и deploy: Pi 5 / Orange Pi 6 Plus (trcc aarch64, udev, systemd, deploy, доки).
 
 ## Следующее действие
-1. Закоммитить незакоммиченный фикс panel-key + изменения оверлея поверх темы
-   (driver.py, dashboard.py, source.py, dev/.../app.py, test_adapter.py) на `web-contract-hardening`.
-   Оверлей подключён через env `HARDWARESCREEN_BACKGROUND_IMAGE` к теме-кадру PNG (dev/статический путь;
-   живой композит видео-под-гейджами — цель Qt-адаптера вариант A). ruff/mypy чисто, 71 прошло, баг-хунт CLEAN.
+1. Панель уже показывает Qt linear-indicator дашборд (`trcc status` → «showing: the Dashboard module»);
+   визуально проверить выделение/фокус и цвет активного контура на самом экране (при необходимости —
+   подкрутить `HARDWARESCREEN_FOCUS_COLOR`). Живой композит видео-под-гейджами — вариант A (Qt оверлей)
+   реализован; статический JPEG-фолбэк (`HARDWARESCREEN_RENDERER=pillow`) остаётся запасным.
 2. Аппаратный чек-лист §A-G весь пройден на устройстве, кроме §E полного video-фон-switch (нужен
    `theme_cmd` в `manager.yaml` — опция: trcc CLI + доступность облачной темы). B и F
    проверены вживую с физическим вынуть/воткнуть.

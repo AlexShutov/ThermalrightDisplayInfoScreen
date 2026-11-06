@@ -25,9 +25,10 @@
   жизненный цикл daemon/IPC, установщик модулей, самозащита сенсоров, безопасные file/JSON-хелперы,
   паттерны FastAPI/pydantic, merge с одной рассылкой, мелкие утилиты. СЛЕДОВАТЬ ЭТОМУ при разработке.
 - **`conventions.md`** — код/стиль, лицензии (наши MIT / внешние GPL-3.0), политика git/коммитов, репозиторий.
-- **`conventions.md`** также фиксирует сабмодуль `ActivityProgressRingsQt` (Activity Rings
-  вынесены в отдельный публичный репозиторий `github.com/AlexShutov/ActivityProgressRingsQt`,
-  подключён здесь как git-сабмодуль в `ActivityProgressRingsQt/`; пакет `activityrings`, MIT, PySide6 опционально).
+- **`conventions.md`** также фиксирует сабмодуль `DashboardWidgets` (Activity Rings + новый линейный
+  индикатор вынесены в отдельный публичный репозиторий `github.com/AlexShutov/DashboardWidgets`,
+  подключён здесь как git-сабмодуль в `DashboardWidgets/`; пакеты `activityrings` и
+  `activity_linear_indicator`, MIT, PySide6 опционально).
 - **`hardware_verification.md`** — чек-лист на экране (только с реальной панелью + trcc daemon):
   композит-поверх-темы, attach-race, бюджет 450 KB, FPS, день/ночь без рестарта, конфликт USB.
   Каждая фаза иначе доказана headless через `tools/quality_check.sh`.

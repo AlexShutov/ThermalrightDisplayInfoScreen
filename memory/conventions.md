@@ -24,12 +24,14 @@
 - Коммиты: `47ba71c` (trcc engine + daemon), `322765b` (рендер в полном разрешении 1920x440),
   `b9f3a38` (licenses README), `fd84893` (модуль-заглушка), `3c24f89` (каталог тем PDF).
 - `trcc_themes_catalog.pdf` — WB-стиль сетка всех 210 тем с превью (14 страниц), закоммичен.
-- **`ActivityProgressRingsQt`** (публичный репозиторий, `github.com/AlexShutov/ActivityProgressRingsQt`) —
-  работа с Activity Rings в стиле Apple вынесена ИЗ `hardwarescreen` в отдельный репозиторий и
-  пере-подключена здесь как **git-сабмодуль**. Его история (один коммит на задачу):
-  Pillow-рендерер + превью → чистая модель focus-shift timeline + тесты → Qt-превью focus + ассеты.
-  Пакет `activityrings` (`src/activityrings/`), MIT; PySide6 — опциональный `qt`-экстра для превью.
-  В основном репо сабмодуль лежит в `ActivityProgressRingsQt/`; бывшие
+- **`DashboardWidgets`** (публичный репозиторий, `github.com/AlexShutov/DashboardWidgets`) —
+  работа с Activity Rings в стиле Apple и новый линейный индикатор вынесены ИЗ `hardwarescreen`
+  в отдельный репозиторий и пере-подключена здесь как **git-сабмодуль**. Его история (один коммит на задачу):
+  Pillow-рендерер + превью → чистая модель focus-shift timeline + тесты → Qt-превью focus + ассеты →
+  пакет `activity_linear_indicator` (Qt-бары по аналогии с Rings) + переименование в **DashboardWidgets**.
+  Пакеты `activityrings` и `activity_linear_indicator` (`src/activityrings/`, `src/activity_linear_indicator/`),
+  MIT; PySide6 — опциональный `qt`-экстра для превью.
+  В основном репо сабмодуль лежит в `DashboardWidgets/`; бывшие
   `src/hardwarescreen/rings*.py`, `tests/test_rings_focus.py`,
   `tools/*rings*preview.py` и `docs/rings*`/`activity_rings_compare.pdf` удалены.
   Обновление сабмодуля: `git submodule update --init --recursive`.
