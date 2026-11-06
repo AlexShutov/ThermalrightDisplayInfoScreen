@@ -99,11 +99,22 @@ class LinearDashboardRenderer:
         selection_transition_s: float | None = None,
         rng: random.Random | None = None,
         layout: BaseLayoutManager | None = None,
+        fill_direction: str | None = None,
     ) -> None:
+        # Константы заданы в конце файла, поэтому дефолт направления разрешаем
+        # здесь (в сигнатуре имя константы ещё не объявлено на этапе определения).
+        if fill_direction is None:
+            fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
+        if fill_direction not in ALLOWED_FILL_DIRECTIONS:
+            raise ValueError(
+                f"fill_direction must be one of {ALLOWED_FILL_DIRECTIONS}, "
+                f"got {fill_direction!r}"
+            )
         self._ease = _ensure_qt()
         self._size: tuple[int, int] = (int(size[0]), int(size[1]))
         self._background = background
         self._fps = fps
+        self._fill_direction = fill_direction
         # Константы заданы в конце файла, поэтому дефолты разрешаем здесь
         # (в сигнатуре имена констант ещё не объявлены на этапе определения класса).
         self._vtween = VALUE_TWEEN_S if value_tween_s is None else value_tween_s
@@ -252,7 +263,8 @@ class LinearDashboardRenderer:
         for i in order:
             f = focus[i] if selection_on else 0.0
             dim = self._selection_dim(f, selection_on, selection_strength)
-            self._paint_bar(p, rects[i], progress[i], specs[i]["color"], dim)
+            self._paint_bar(p, rects[i], progress[i], specs[i]["color"], dim,
+                            self._fill_direction)
         p.end()
 
         pil = self._qimage_to_pil(img)
@@ -269,9 +281,8 @@ class LinearDashboardRenderer:
                     # заливке подсвечивать нечего — бар ещё пуст.
                     fill_fraction = max(0.0, min(1.0, progress[i]))
                     if fill_fraction > 0.0:
-                        fill_rect = QRectF(
-                            rects[i].x(), rects[i].y(),
-                            rects[i].width() * fill_fraction, rects[i].height(),
+                        fill_rect = self._fill_rect(
+                            rects[i], fill_fraction, self._fill_direction,
                         )
                         pil = self._paint_glow_pil(pil, fill_rect, focus_color, f)
         if specs:
@@ -416,10 +427,40 @@ class LinearDashboardRenderer:
         return Image.alpha_composite(img, light)
 
     @staticmethod
-    def _paint_bar(p, rect, fill_frac: float, color, dim: float) -> None:
-        """Рисует один бар (полоса низкого альфа + градиентная заливка), dim (0..1)."""
-        from PySide6.QtCore import QRectF, Qt
+    def _fill_rect(rect, fill_fraction: float, fill_direction: str):
+        """Участок бара, который заполнен значением (ширина × доля).
+
+        ``right_to_left`` — заливка начинается от правого края бара и растёт
+        влево; ``left_to_right`` (по умолчанию) — от левого края вправо.
+        Возвращает ``QRectF`` той же итоговой геометрии, что и заливка бара,
+        чтобы подсветка совпадала с заливкой.
+        """
+        from PySide6.QtCore import QRectF
+
+        if fill_direction not in ALLOWED_FILL_DIRECTIONS:
+            raise ValueError(
+                f"fill_direction must be one of {ALLOWED_FILL_DIRECTIONS}, "
+                f"got {fill_direction!r}"
+            )
+        fill_width = rect.width() * max(0.0, min(1.0, fill_fraction))
+        if fill_direction == FILL_DIRECTION_RIGHT_TO_LEFT:
+            return QRectF(rect.right() - fill_width, rect.y(), fill_width, rect.height())
+        return QRectF(rect.x(), rect.y(), fill_width, rect.height())
+
+    @staticmethod
+    def _paint_bar(p, rect, fill_frac: float, color, dim: float,
+                   fill_direction: str | None = None) -> None:
+        """Рисует один бар (полоса низкого альфа + градиентная заливка), dim (0..1).
+
+        ``fill_direction`` задаёт, от какой стороны бара растёт заливка:
+        ``right_to_left`` — от правого края влево, ``left_to_right`` (по
+        умолчанию) — слева направо.
+        """
+        from PySide6.QtCore import Qt
         from PySide6.QtGui import QBrush, QColor, QLinearGradient
+
+        if fill_direction is None:
+            fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
 
         bar_height = rect.height()
         corner_radius = max(MIN_BAR_CORNER_RADIUS, bar_height / 2.0)
@@ -434,7 +475,7 @@ class LinearDashboardRenderer:
         # Заливка (градиент) со скруглёнными концами, до доли значения.
         fill_fraction = max(0.0, min(1.0, fill_frac))
         if fill_fraction > 0:
-            fill_rect = QRectF(rect.x(), rect.y(), rect.width() * fill_fraction, rect.height())
+            fill_rect = LinearDashboardRenderer._fill_rect(rect, fill_fraction, fill_direction)
             gradient = QLinearGradient(rect.x(), 0.0, rect.x() + rect.width(), 0.0)
             gradient.setColorAt(GRADIENT_START, base_color.lighter(FILL_GRADIENT_LIGHTER))
             gradient.setColorAt(GRADIENT_EDGE_HI, QColor(base_color))
@@ -592,6 +633,13 @@ FOCUS_EPSILON = 1e-6         # порог «есть активный бар»
 
 # Шкала процентов (для приведения 0..100 к доле 0..1).
 PERCENT_SCALE = 100.0
+
+# Направление заполнения столбцов: ``right_to_left`` — заливка растёт от правого
+# края влево, ``left_to_right`` (по умолчанию) — от левого края вправо.  Значения
+# совпадают с параметром направления сабмодуля activity_linear_indicator.
+FILL_DIRECTION_LEFT_TO_RIGHT = "left_to_right"
+FILL_DIRECTION_RIGHT_TO_LEFT = "right_to_left"
+ALLOWED_FILL_DIRECTIONS = (FILL_DIRECTION_LEFT_TO_RIGHT, FILL_DIRECTION_RIGHT_TO_LEFT)
 
 # Подписи (labels).
 LABEL_FONT_SIZE = 26

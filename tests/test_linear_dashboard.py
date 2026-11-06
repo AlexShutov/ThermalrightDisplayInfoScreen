@@ -92,3 +92,23 @@ def test_value_tween_runs_to_target_in_three_hundred_ms():
     assert renderer._eased_progress(0, 0.8, 0.1) < 0.8
     assert abs(renderer._eased_progress(0, 0.8, 0.3) - 0.8) < 1e-6
     assert abs(renderer._eased_progress(0, 0.8, 1.0) - 0.8) < 1e-6
+
+
+def test_fill_direction_default_is_left_to_right():
+    """По умолчанию столбцы заполняются слева направо (как в сабмодуле)."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    assert renderer._fill_direction == "left_to_right"
+
+
+def test_fill_direction_right_to_left_is_accepted_and_stored():
+    """Направление «справа-налево» принимается и сохраняется на рендерере."""
+    renderer = LinearDashboardRenderer((1920, 440), fill_direction="right_to_left")
+    assert renderer._fill_direction == "right_to_left"
+
+
+def test_fill_direction_unknown_value_rejected():
+    """Неизвестное направление отклоняется с ValueError (как в сабмодуле)."""
+    import pytest
+
+    with pytest.raises(ValueError):
+        LinearDashboardRenderer((1920, 440), fill_direction="diagonal")
