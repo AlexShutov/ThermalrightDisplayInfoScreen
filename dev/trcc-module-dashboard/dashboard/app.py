@@ -103,7 +103,12 @@ class DashboardModule(BaseModule, key=_KEY):
         if mode == "qt":
             from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer
 
-            return LinearDashboardRenderer(size, background=bg_image, fps=fps)
+            fill_direction = os.environ.get(
+                "HARDWARESCREEN_FILL_DIRECTION", "left_to_right"
+            ).strip().lower()
+            return LinearDashboardRenderer(
+                size, background=bg_image, fps=fps, fill_direction=fill_direction
+            )
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
         return None
 
