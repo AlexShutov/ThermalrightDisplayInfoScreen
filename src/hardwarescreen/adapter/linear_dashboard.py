@@ -263,7 +263,17 @@ class LinearDashboardRenderer:
             for i in range(n):
                 f = focus[i] if i < len(focus) else 0.0
                 if f > 0.0:
-                    pil = self._paint_glow_pil(pil, rects[i], focus_color, f)
+                    # Подсветка идёт вокруг ЗАПОЛНЕННОЙ части бара (ширина ×
+                    # прогресс), а не вокруг всей полосы — и следует за анимацией
+                    # значения (progress[i] меняется каждый кадр).  При нулевой
+                    # заливке подсвечивать нечего — бар ещё пуст.
+                    fill_fraction = max(0.0, min(1.0, progress[i]))
+                    if fill_fraction > 0.0:
+                        fill_rect = QRectF(
+                            rects[i].x(), rects[i].y(),
+                            rects[i].width() * fill_fraction, rects[i].height(),
+                        )
+                        pil = self._paint_glow_pil(pil, fill_rect, focus_color, f)
         if specs:
             self._paint_text_pil(
                 pil, specs, layout, pal["text"],
