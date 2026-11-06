@@ -64,8 +64,12 @@ class DashboardSource:
         frame is returned unchanged — identical bytes are cheap for the USB
         transport (keepalive), and unlike a wall-clock animation they never
         overload the panel's ~18 fps budget into dropped-frame black flashes.
+
+        If the store stops advancing ``seq`` (e.g. the producer pauses), the last
+        known state is held so the dashboard keeps showing real values rather than
+        collapsing to a "no data" frame.
         """
-        state = self._poller.poll()
+        state = self._poller.poll() or self._poller.last
         now = time.monotonic()
         if state is not None:
             sig = self._content_sig(state)
