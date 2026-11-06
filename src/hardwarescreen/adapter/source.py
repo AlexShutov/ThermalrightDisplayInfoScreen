@@ -28,18 +28,18 @@ class DashboardSource:
         size: tuple[int, int] = DEFAULT_SIZE,
         background: Image.Image | None = None,
         frame_renderer: Callable | None = None,
-        transition_s: float = 0.6,
+        fps: float = 8.0,
     ):
         self._poller = poller
         self._w, self._h = size
         self._background = background
         self._renderer = frame_renderer
-        self._transition_s = transition_s
         self._state: dict | None = None
         self._frame: bytes | None = None
-        self._anim_due_until: float | None = None
+        self._last_render_at: float | None = None
         self._last_sig: object | None = None
         self._changed = False
+        self._frame_interval = 1.0 / max(1.0, fps)
         self._closed = False
 
     @staticmethod
@@ -55,14 +55,15 @@ class DashboardSource:
     def latest(self) -> bytes:
         """Return the newest raw RGB frame (``w*h*3`` bytes).
 
-        REACTIVE: the frame is re-rendered only when the displayed content
-        (setup/values/palette) actually changed, while the renderer's eased
-        transition is still settling, or before any frame exists.  Between those
-        the cached frame is returned unchanged, so the ``SourceDriver`` (which
-        samples every tick) keeps re-sending identical bytes instead of a
-        churning frame — that holds the panel alive (keepalive) without flooding
-        its ~18 fps USB budget.  A ``seq`` bump with unchanged content is ignored,
-        so the dashboard never churns on a quiet heartbeat.
+        Drives the renderer's eased animation at a capped, panel-safe cadence
+        (``fps``) so the rings-style highlight keeps moving even while the sensor
+        values are quiet (the panel would otherwise freeze on one frame).  A
+        frame is also re-rendered immediately when the displayed content
+        (setup/values/palette) actually changes, so fresh data reaches the panel
+        without waiting for the next cadence tick.  Between those, the cached
+        frame is returned unchanged — identical bytes are cheap for the USB
+        transport (keepalive), and unlike a wall-clock animation they never
+        overload the panel's ~18 fps budget into dropped-frame black flashes.
         """
         state = self._poller.poll()
         now = time.monotonic()
@@ -71,10 +72,14 @@ class DashboardSource:
             if sig != self._last_sig:
                 self._state = state
                 self._last_sig = sig
-                self._anim_due_until = now + self._transition_s
                 self._changed = True
-        settling = self._anim_due_until is not None and now < self._anim_due_until
-        if self._frame is None or self._changed or settling:
+        due = (
+            self._frame is None
+            or self._changed
+            or self._last_render_at is None
+            or (now - self._last_render_at) >= self._frame_interval
+        )
+        if due:
             self._changed = False
             st = self._state or {}
             setup = st.get("setup") or []
@@ -93,6 +98,8 @@ class DashboardSource:
                     self._background,
                 )
                 self._frame = img.tobytes()
+            self._last_render_at = now
+        assert self._frame is not None
         return self._frame
 
     def close(self) -> None:

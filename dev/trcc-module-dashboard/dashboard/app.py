@@ -63,8 +63,11 @@ class DashboardModule(BaseModule, key=_KEY):
         # via an env var in the trcc daemon; absent -> solid palette background.
         bg_path = os.environ.get("HARDWARESCREEN_BACKGROUND_IMAGE")
         bg_image = self._load_background(bg_path)
-        renderer = self._make_renderer(size, bg_image)
-        self._source = DashboardSource(self._poller, size, bg_image, frame_renderer=renderer)
+        render_fps = float(os.environ.get("HARDWARESCREEN_RENDER_FPS", "8.0"))
+        renderer = self._make_renderer(size, bg_image, render_fps)
+        self._source = DashboardSource(
+            self._poller, size, bg_image, frame_renderer=renderer, fps=render_fps
+        )
         self._frame_source = _BridgeFrameSource(self._source)
         self._driver = AdapterDriver(host.background, self._frame_source, key=_KEY)
         self._stop = threading.Event()
@@ -85,7 +88,7 @@ class DashboardModule(BaseModule, key=_KEY):
             self._driver.update(state, bool(keys), self._panel_key)
             time.sleep(0.5)
 
-    def _make_renderer(self, size, bg_image):
+    def _make_renderer(self, size, bg_image, fps):
         """Qt (PySide6) linear-indicator renderer by default; ``pillow`` for fallback.
 
         The Qt renderer is injected as the ``DashboardSource`` frame_renderer (a stateful
@@ -96,7 +99,7 @@ class DashboardModule(BaseModule, key=_KEY):
         if mode == "qt":
             from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer
 
-            return LinearDashboardRenderer(size, background=bg_image)
+            return LinearDashboardRenderer(size, background=bg_image, fps=fps)
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
         return None
 
