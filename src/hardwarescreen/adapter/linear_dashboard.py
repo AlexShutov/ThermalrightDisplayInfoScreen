@@ -42,6 +42,11 @@ from PIL import Image
 
 from .dashboard import DEFAULT_SIZE, _palette, hex_to_rgb, value_color
 from .layout import BaseLayoutManager, SelectionLayoutManager
+from .selection_strategy import (
+    SelectMultipleIndicators,
+    SelectSingleIndicator,
+    count_selected,
+)
 
 _LF = None
 
@@ -136,6 +141,11 @@ class LinearDashboardRenderer:
         )
         self._rng = rng if rng is not None else random.Random()
         self._layout = layout if layout is not None else SelectionLayoutManager()
+        # Стратегии роста выбранных индикаторов (внутренняя деталь).  ``select`` —
+        # прежнее поведение; ``multiple`` применяется только когда выбрано больше
+        # одного индикатора и урезает рост соседних выбранных до зазора под свечение.
+        self._strategy_single = SelectSingleIndicator()
+        self._strategy_multiple = SelectMultipleIndicators()
         self._ids: list[str] = []
         self._anim_t = 0.0
         self._anim_step = 1.0 / max(1.0, fps)
@@ -269,7 +279,6 @@ class LinearDashboardRenderer:
         for i, spec in enumerate(specs):
             progress.append(self._eased_progress(i, spec["pct"] / PERCENT_SCALE, now))
 
-        from PySide6.QtCore import QRectF
         from PySide6.QtGui import QPainter
 
         img = self._make_image(pal, background)
@@ -282,30 +291,19 @@ class LinearDashboardRenderer:
         # значения), а свечение выделенного бара — цвет его текущего состояния.
         track_color = self._track_color(pal)
 
-        # Grow the selected bar around its centre; non-selected bars keep the
-        # constant layout size, so all bars stay the same size when idle.  For the
-        # horizontal rows the growth is in thickness (height); for vertical columns
-        # it is in width.  Clamp the grown rect into the panel margins so a selected
-        # bar never overflows at low gauge counts.
+        # Рост выбранного бара вокруг центра делегирован стратегии выделения: один
+        # бар (или ни одного) растёт на ``selection_scale`` (прежнее поведение), а при
+        # нескольких выбранных рядом рост урезается, чтобы между увеличенными полосами
+        # остался зазор не менее ``GLOW_MIN_GAP_MM`` — места под свечение, чтобы
+        # свечения соседних выбранных не смешивались.
         panel_h = self._size[1]
         panel_w = self._size[0]
         margin = self._layout.edge_margin
-        rects: list[QRectF] = []
-        for i, geo in enumerate(layout.geometry):
-            f = focus[i] if selection_on else 0.0
-            scale = (1.0 + (self._layout.selection_scale - 1.0) * f) if selection_on else 1.0
-            if self._bar_vertical:
-                grown = geo.width * scale
-                cx = geo.x + geo.width / 2.0
-                left = max(float(margin), min(float(panel_w) - float(margin), cx - grown / 2.0))
-                right = max(left, min(float(panel_w) - float(margin), cx + grown / 2.0))
-                rects.append(QRectF(left, geo.y, max(0.0, right - left), geo.height))
-            else:
-                grown = geo.height * scale
-                cy = geo.center_y
-                top = max(float(margin), min(float(panel_h) - float(margin), cy - grown / 2.0))
-                bottom = max(top, min(float(panel_h) - float(margin), cy + grown / 2.0))
-                rects.append(QRectF(geo.x, top, geo.width, max(0.0, bottom - top)))
+        min_gap_px = GLOW_MIN_GAP_MM * self._resolve_px_per_mm(self._size)
+        rects = self._select_strategy(focus, selection_on).compute(
+            focus, layout.geometry, panel_w, panel_h, margin,
+            self._layout.selection_scale, self._bar_vertical, min_gap_px,
+        )
 
         # Draw in increasing z-order: dimmed neighbours first, the selected bar (with
         # its green glow) last, on top — the correct overlay z-buffer ordering.
@@ -668,6 +666,30 @@ class LinearDashboardRenderer:
         peak = max(focus)
         return focus.index(peak) if peak > FOCUS_EPSILON else None
 
+    def _select_strategy(self, focus: list[float], selection_on: bool):
+        """Выбирает стратегию роста по числу выбранных индикаторов.
+
+        Больше одной выбранной — ``SelectMultipleIndicators``; одна (или ни одной) —
+        ``SelectSingleIndicator`` (прежнее поведение).
+        """
+        if selection_on and count_selected(focus) > 1:
+            return self._strategy_multiple
+        return self._strategy_single
+
+    def _resolve_px_per_mm(self, size: tuple[int, int]) -> float:
+        """Сколько пикселей панели приходится на 1 мм.
+
+        Выводится из физической диагонали панели (``DEVICE_DIAGONAL_INCHES``) и её
+        пиксельного разрешения при квадратных пикселях:
+        ``px_per_mm = diagonal_px / diagonal_mm`` (та же формула, что в dev-модуле
+        ``trcc-module-dashboard``).
+        """
+        width = max(1, int(size[0]))
+        height = max(1, int(size[1]))
+        diagonal_px = (width * width + height * height) ** 0.5
+        diagonal_mm = DEVICE_DIAGONAL_INCHES * MM_PER_INCH
+        return diagonal_px / diagonal_mm
+
     @staticmethod
     def _content_signature(setup: list[dict], values: dict, palette: dict) -> object:
         """Отпечаток отображаемого содержимого — его смена = новое окно данных."""
@@ -799,6 +821,15 @@ Z_FOREGROUND = 100.0         # выделенный бар всегда пове
 Z_BASE = 1.0                 # остальные бары в порядке фокуса
 Z_FOCUS_WEIGHT = 2.0         # вес фокуса при сортировке
 FOCUS_EPSILON = 1e-6         # порог «есть активный бар»
+
+# Физические размеры панели (Trofeo Vision, маркетинговый «11.3») — для пересчёта
+# мм → px через px_per_mm, чтобы зазоры под свечение были заданы в миллиметрах, а не
+# в пикселях конкретного разрешения.
+DEVICE_DIAGONAL_INCHES = 11.3
+MM_PER_INCH = 25.4
+# Минимальный зазор между краями двух СМЕЖНЫХ увеличенных выбранных полос: места под
+# свечение, чтобы свечения соседних выбранных не смешивались.
+GLOW_MIN_GAP_MM = 3.0
 
 # Шкала процентов (для приведения 0..100 к доле 0..1).
 PERCENT_SCALE = 100.0

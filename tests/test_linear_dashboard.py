@@ -10,12 +10,56 @@ from __future__ import annotations
 
 import random
 
+import pytest
+
 from hardwarescreen.adapter import linear_dashboard as ld
+from hardwarescreen.adapter import selection_strategy as ss
 from hardwarescreen.adapter.dashboard import value_color
-from hardwarescreen.adapter.layout import StaticLayoutManager
+from hardwarescreen.adapter.layout import BarGeometry, StaticLayoutManager
 from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer
+from hardwarescreen.adapter.selection_strategy import (
+    SelectMultipleIndicators,
+    SelectSingleIndicator,
+    count_selected,
+    select_strategy,
+)
 
 BARS = 6
+PANEL_W = 1000.0
+PANEL_H = 400.0
+EDGE_MARGIN = 14.0
+SELECTION_SCALE = 1.22
+
+
+class _FakeQRect:
+    """Заменитель ``QRectF`` для стратегий без Qt: хранит и отдаёт геометрию."""
+
+    def __init__(self, x: float, y: float, width: float, height: float) -> None:
+        self._x = x
+        self._y = y
+        self._width = width
+        self._height = height
+
+    def x(self) -> float:
+        return self._x
+
+    def y(self) -> float:
+        return self._y
+
+    def width(self) -> float:
+        return self._width
+
+    def height(self) -> float:
+        return self._height
+
+
+ss._QRECTF = _FakeQRect
+
+
+def _vertical_geometry(centers: list[float], width: float = 80.0,
+                       height: float = 372.0, top: float = EDGE_MARGIN):
+    """Вертикальные столбцы: ``BarGeometry`` по центрам X, одинаковой толщиной."""
+    return [BarGeometry(cx - width / 2.0, top, width, height) for cx in centers]
 
 
 class _FakeRect:
@@ -124,8 +168,6 @@ def test_fill_direction_right_to_left_is_accepted_and_stored():
 
 def test_fill_direction_unknown_value_rejected():
     """Неизвестное направление отклоняется с ValueError (как в сабмодуле)."""
-    import pytest
-
     with pytest.raises(ValueError):
         LinearDashboardRenderer((1920, 440), fill_direction="diagonal")
 
@@ -271,6 +313,110 @@ def test_track_color_none_when_palette_off():
     """Без палитры подложка берётся из цвета самой заливки (``None``)."""
     renderer = LinearDashboardRenderer((1920, 440), value_palette_on=False)
     assert renderer._track_color({"muted": (138, 147, 166)}) is None
+
+
+# --- Стратегии выделения (выбор + рост нескольких индикаторов) ---
+
+
+def test_strategy_selects_single_when_up_to_one_selected():
+    """≤1 выбранной → ``SelectSingleIndicator``; >1 → ``SelectMultipleIndicators``."""
+    assert isinstance(select_strategy([], True), SelectSingleIndicator)
+    assert isinstance(select_strategy([1.0], True), SelectSingleIndicator)
+    assert isinstance(select_strategy([1.0, 0.0], True), SelectSingleIndicator)
+    assert isinstance(select_strategy([1.0, 1.0], True), SelectMultipleIndicators)
+    assert isinstance(select_strategy([1.0, 0.0, 1.0], True), SelectMultipleIndicators)
+    # Выключенное выделение — всегда одиночная стратегия (рост всё равно не применяется).
+    assert isinstance(select_strategy([1.0, 1.0], False), SelectSingleIndicator)
+
+
+def test_count_selected_counts_only_lit_bars():
+    """Считаются только бары со строго положительным фокусом."""
+    assert count_selected([0.0, 1.0, 0.0, 1.0]) == 2
+    assert count_selected([0.0, 0.0, 0.0]) == 0
+    assert count_selected([1.0]) == 1
+
+
+def test_renderer_select_strategy_picks_by_selected_count():
+    """Рендерер выбирает ту же стратегию по числу выбранных, что и фабрика."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    assert renderer._select_strategy([1.0, 0.0], True) is renderer._strategy_single
+    assert renderer._select_strategy([1.0, 1.0], True) is renderer._strategy_multiple
+    assert renderer._select_strategy([1.0, 0.0], False) is renderer._strategy_single
+
+
+def test_renderer_resolves_positive_px_per_mm():
+    """px_per_mm выводится из диагонали и остаётся в разумном диапазоне (11.3")."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    px_per_mm = renderer._resolve_px_per_mm((1920, 440))
+    assert px_per_mm > 0
+    assert 6.0 < px_per_mm < 8.0
+
+
+def test_multiple_strategy_non_adjacent_grows_like_single():
+    """Несоседние выбранные растут на полный ``selection_scale`` (как раньше)."""
+    geometry = _vertical_geometry([200.0, 400.0, 600.0, 800.0])
+    focus = [1.0, 0.0, 1.0, 0.0]  # бары 0 и 2 — несоседние
+    single = SelectSingleIndicator().compute(
+        focus, geometry, PANEL_W, PANEL_H, EDGE_MARGIN, SELECTION_SCALE, True, 20.0
+    )
+    multiple = SelectMultipleIndicators().compute(
+        focus, geometry, PANEL_W, PANEL_H, EDGE_MARGIN, SELECTION_SCALE, True, 20.0
+    )
+    for i in range(len(geometry)):
+        assert multiple[i].width() == pytest.approx(single[i].width())
+        assert multiple[i].height() == pytest.approx(single[i].height())
+        assert multiple[i].x() == pytest.approx(single[i].x())
+        assert multiple[i].y() == pytest.approx(single[i].y())
+    # Выбранные бара растут на 1.22, невыбранные остаются базовой толщиной.
+    assert multiple[0].width() == pytest.approx(80.0 * SELECTION_SCALE)
+    assert multiple[2].width() == pytest.approx(80.0 * SELECTION_SCALE)
+    assert multiple[1].width() == pytest.approx(80.0)
+
+
+def test_multiple_strategy_adjacent_trims_growth_and_keeps_min_gap():
+    """Соседние выбранные растут меньше, оставляя зазор не менее ``min_gap_px``."""
+    geometry = _vertical_geometry([300.0, 410.0, 520.0, 630.0])
+    focus = [1.0, 1.0, 0.0, 0.0]  # бары 0 и 1 — соседние
+    rects = SelectMultipleIndicators().compute(
+        focus, geometry, PANEL_W, PANEL_H, EDGE_MARGIN, SELECTION_SCALE, True, 20.0
+    )
+    # Зазор базы 30 px, до 20 px достаточно; рост урезан с 1.22 до 1.125.
+    assert rects[0].width() == pytest.approx(80.0 * 1.125)
+    assert rects[1].width() == pytest.approx(80.0 * 1.125)
+    gap = rects[1].x() - (rects[0].x() + rects[0].width())
+    assert gap >= 20.0
+    # Урезанный рост меньше полного scale.
+    assert rects[0].width() < 80.0 * SELECTION_SCALE
+
+
+def test_multiple_strategy_boundary_zero_growth_when_gap_too_small():
+    """Если зазор и без роста уже < ``min_gap_px`` — рост пары нулевой."""
+    geometry = _vertical_geometry([300.0, 390.0, 480.0, 570.0])
+    focus = [1.0, 1.0, 0.0, 0.0]  # бары 0 и 1 — соседние, зазор 10 px
+    rects = SelectMultipleIndicators().compute(
+        focus, geometry, PANEL_W, PANEL_H, EDGE_MARGIN, SELECTION_SCALE, True, 20.0
+    )
+    # Рост не применяется: толщина остаётся базовой, зазор так и остаётся 10 px.
+    assert rects[0].width() == pytest.approx(80.0)
+    assert rects[1].width() == pytest.approx(80.0)
+    assert rects[0].width() < 80.0 * SELECTION_SCALE
+
+
+def test_multiple_strategy_horizontal_adjacent_trims_along_height():
+    """Горизонтальные полосы растут по ВЫСОТЕ; зазор меряется по Y — как по оси роста."""
+    geometry = [
+        BarGeometry(100.0, 60.0, 800.0, 80.0),   # центр Y = 100
+        BarGeometry(100.0, 170.0, 800.0, 80.0),  # центр Y = 210 (зазор 30 px)
+    ]
+    focus = [1.0, 1.0]
+    rects = SelectMultipleIndicators().compute(
+        focus, geometry, PANEL_W, PANEL_H, EDGE_MARGIN, SELECTION_SCALE, False, 20.0
+    )
+    # Рост в высоту (1.125), ширина не меняется.
+    assert rects[0].height() == pytest.approx(80.0 * 1.125)
+    assert rects[0].width() == pytest.approx(800.0)
+    gap = rects[1].y() - (rects[0].y() + rects[0].height())
+    assert gap >= 20.0
 
 
 
