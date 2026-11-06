@@ -1,3 +1,3 @@
-[submodule "ActivityProgressRingsQt"]
-	path = ActivityProgressRingsQt
-	url = https://github.com/AlexShutov/ActivityProgressRingsQt.git
+[submodule "DashboardWidgets"]
+	path = DashboardWidgets
+	url = https://github.com/AlexShutov/DashboardWidgets.git
