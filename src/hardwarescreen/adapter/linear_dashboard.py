@@ -1,20 +1,24 @@
 """Qt (PySide6) linear-indicator dashboard renderer (MIT, lazy Qt).
 
-Builds a gap-preserving vertical stack of horizontal bars from bridge gauge
+Builds a vertical stack of full-width horizontal bars from bridge gauge
 ``setup``/``values``/``palette`` and renders an offscreen frame as raw RGB bytes, then
-paints each gauge's ``label``/``value`` text over it. Both the selection (focus) and the
-value (progress) transitions are eased over time — the bars never jump. A focused bar
-widens (``FOCUS_SCALE``) and reflows its neighbours and glows green from below; its under-
-glow snaps to the active outline colour (green by default, overridable via
-``HARDWARESCREEN_FOCUS_COLOR``) instead of an invisible black drop shadow, which would be
-lost on the dark backdrop. Bars span the full panel height (no top/footer inset).
+paints each gauge's ``label``/``value`` text over it.
 
-Rendering paints the bars directly into a standalone ``QImage`` with a ``QPainter`` — no
-``QApplication`` and no ``QGraphicsScene`` — then hand the frame to Pillow for the label/
-value text. QImage painting is reentrant and does not touch the GUI, and text needs no
-Qt app, so the whole render is thread-safe inside the trcc daemon's native display loop.
-``activity_linear_indicator`` (the Widgets submodule) is imported lazily, so importing
-this module (and ``hardwarescreen``) does not require Qt; only the render path needs it.
+Bar geometry (size + position) is delegated to a ``DashboardLayoutManager`` — like
+Android's ``LinearLayoutManager``, a separate object measures the items inside the
+panel so the renderer only draws at the returned rects.  The layout is static: the
+focus (selection) highlights the current bar with a green glowing outline plus a
+bounded under-glow, but **never resizes** any bar — so selecting one item neither
+shrinks its neighbours nor overflows the panel.  Bars fill the container height minus
+a small top/bottom margin (~0.5 cm on the 1920x440 panel).
+
+Both the selection (focus) and the value (progress) transitions are eased over time.
+Rendering paints the bars directly into a standalone ``QImage`` with a ``QPainter`` —
+no ``QApplication`` and no ``QGraphicsScene`` — then hands the frame to Pillow for the
+label/value text.  QImage painting is reentrant and does not touch the GUI, and text
+needs no Qt app, so the whole render is thread-safe inside the trcc daemon's native
+display loop.  ``activity_linear_indicator`` (the Widgets submodule) is imported
+lazily, so importing this module (and ``hardwarescreen``) does not require Qt.
 """
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
@@ -25,36 +29,23 @@ from math import exp
 from PIL import Image
 
 from .dashboard import DEFAULT_SIZE, _palette, hex_to_rgb
+from .layout import DashboardLayoutManager
 
 _LF = None
 
 
 def _ensure_qt():
-    """Lazily import the focus-model constants (no QApplication needed)."""
+    """Lazily import the focus easing (no QApplication needed)."""
     global _LF
     if _LF is None:
-        from activity_linear_indicator.linear_focus import (
-            FOCUS_SCALE,
-            ease_out_cubic,
-        )
+        from activity_linear_indicator.linear_focus import ease_out_cubic
 
-        _LF = (FOCUS_SCALE, ease_out_cubic)
+        _LF = ease_out_cubic
     return _LF
 
 
 def _focus_color() -> tuple[int, int, int]:
     return hex_to_rgb(os.environ.get("HARDWARESCREEN_FOCUS_COLOR", "#00c85a"))
-
-
-def _gap_preserving_positions(widths: list[float], gap: float) -> list[float]:
-    """Top-anchored gap-preserving y-centers (first bar's top edge at 0)."""
-    positions: list[float] = []
-    acc = 0.0
-    for w in widths:
-        acc += w / 2.0
-        positions.append(acc)
-        acc += w / 2.0 + gap
-    return positions
 
 
 def _pil_font(size: int):
@@ -66,7 +57,7 @@ def _pil_font(size: int):
         return None
 
 
-def _pil_text(d, s: str, x: int, y: int, size: int = 28,
+def _pil_text(d, s: str, x: int, y: int, size: int = 26,
               fill: tuple[int, int, int] = (238, 242, 248)) -> None:
     d.text((x, y), s, fill=fill, font=_pil_font(size))
 
@@ -83,22 +74,16 @@ class LinearDashboardRenderer:
         focus_cycle_s: float = 2.0,
         focus_transition_s: float = 0.6,
         value_tween_s: float = 0.6,
-        margin: int = 40,
-        top: int = 0,
-        footer: int = 0,
-        gap: int = 16,
+        layout: DashboardLayoutManager | None = None,
     ) -> None:
-        (self._fscale, self._ease) = _ensure_qt()
+        self._ease = _ensure_qt()
         self._size: tuple[int, int] = (int(size[0]), int(size[1]))
         self._background = background
         self._fps = fps
         self._cycle = focus_cycle_s
         self._ftrans = focus_transition_s
         self._vtween = value_tween_s
-        self._margin = margin
-        self._top = top
-        self._footer = footer
-        self._gap = gap
+        self._layout = layout if layout is not None else DashboardLayoutManager()
         self._ids: list[str] = []
         self._anim_t = 0.0
         self._anim_step = 1.0 / max(1.0, fps)
@@ -116,8 +101,6 @@ class LinearDashboardRenderer:
         return self.render(setup, values, palette, size, background)
 
     def _specs(self, setup: list[dict], values: dict, palette: dict) -> list[dict]:
-        w, _ = self._size
-        length = max(0, w - 2 * self._margin)
         specs: list[dict] = []
         for g in setup:
             gid = g.get("id", "")
@@ -139,7 +122,6 @@ class LinearDashboardRenderer:
                     "text": text,
                     "pct": pct,
                     "color": palette["accent"],
-                    "length": length,
                 }
             )
         return specs
@@ -171,22 +153,7 @@ class LinearDashboardRenderer:
             self._last_time = {}
 
         n = len(specs)
-        available = self._size[1] - self._top - self._footer
-        gap = float(self._gap)
-        base = max(4.0, (available - gap * (n - 1)) / n) if n else 1.0
-
-        widths: list[float] = []
-        for i, _ in enumerate(specs):
-            f = self._focus_factor(t, i, n)
-            widths.append(base * (1.0 + f * (self._fscale - 1.0)))
-        # Keep the expanded (focused) stack within the available region so a bar's
-        # back edge never intrudes into the footer / off the panel edge.
-        total = sum(widths) + gap * (n - 1)
-        if n and total > available > 0:
-            fit = available / total
-            widths = [w * fit for w in widths]
-        positions = _gap_preserving_positions(widths, gap)
-
+        layout = self._layout.measure(self._size[0], self._size[1], n)
         progress: list[float] = []
         for i, spec in enumerate(specs):
             progress.append(self._eased_progress(i, spec["pct"] / 100.0, now))
@@ -197,34 +164,23 @@ class LinearDashboardRenderer:
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         focus_color = _focus_color()
-        cx = self._size[0] / 2.0
         for i, spec in enumerate(specs):
-            cy = positions[i] + self._top
-            self._paint_bar(
-                p,
-                cx,
-                cy,
-                spec["length"],
-                widths[i],
-                progress[i],
-                self._focus_factor(t, i, n),
-                spec["color"],
-                focus_color,
-            )
+            f = self._focus_factor(t, i, n)
+            self._paint_bar(p, layout[i], progress[i], f, spec["color"], focus_color)
         p.end()
 
         pil = self._qimage_to_pil(img)
         if specs:
-            self._paint_text_pil(pil, specs, positions, pal["text"])
+            self._paint_text_pil(pil, specs, layout, pal["text"])
         else:
             from PIL import ImageDraw
 
             d = ImageDraw.Draw(pil)
             _pil_text(d, "no data", self._size[0] // 2 - 34,
-                      (self._size[1] - self._footer) // 2, size=30, fill=pal["text"])
+                      (self._size[1] - 34) // 2, size=30, fill=pal["text"])
             d.line(
-                [(self._size[0] // 2 - 51, (self._size[1] - self._footer) // 2 + 28),
-                 (self._size[0] // 2 + 51, (self._size[1] - self._footer) // 2 + 28)],
+                [(self._size[0] // 2 - 51, (self._size[1] - 34) // 2 + 28),
+                 (self._size[0] // 2 + 51, (self._size[1] - 34) // 2 + 28)],
                 fill=pal["muted"], width=2,
             )
         return pil.tobytes()
@@ -252,33 +208,22 @@ class LinearDashboardRenderer:
         raw = rgb.tobytes()
         return QImage(raw, w, h, w * 3, QImage.Format_RGB888)
 
-    def _paint_bar(
-        self,
-        p,
-        cx: float,
-        cy: float,
-        length: float,
-        t: float,
-        fr: float,
-        f: float,
-        color,
-        focus_color,
-    ) -> None:
-        from PySide6.QtCore import QRectF
+    def _paint_bar(self, p, geo, fr: float, f: float, color, focus_color) -> None:
+        from PySide6.QtCore import QRectF, Qt
         from PySide6.QtGui import QBrush, QColor, QLinearGradient
 
         color = QColor(*color)
-        left = cx - length / 2.0
-        top = cy - t / 2.0
+        left = geo.x
+        top = geo.y
+        length = geo.width
+        t = geo.height
         radius = t / 2.0
         track = QRectF(left, top, length, t)
         fill = QRectF(left, top, length * max(0.0, min(fr, 1.0)), t)
-
-        # Soft under-glow instead of a black drop shadow: on a dark/black
-        # backdrop a black shadow is invisible, so the bar floats on a bounded
-        # colour bloom just below its bottom edge — the bar's own accent colour
-        # when idle, blending to the green focus colour when selected.
         focus = f > 0.0
+
+        # Soft bounded under-glow beneath the bar: accent colour when idle,
+        # green when selected (replaces a black drop shadow, invisible on dark).
         glow_color = focus_color if focus else (color.red(), color.green(), color.blue())
         self._under_glow(
             p,
@@ -286,15 +231,15 @@ class LinearDashboardRenderer:
             glow_color,
             t,
             f if focus else 0.45,
-            bloom_px=28.0 if focus else 12.0,
-            alpha_base=140 if focus else 38,
-            seam_alpha=235 if focus else 0,
+            bloom_px=22.0 if focus else 12.0,
+            alpha_base=52 if focus else 34,
         )
 
         # Backdrop track (low-alpha unfilled band).
         bcol = QColor(color)
         bcol.setAlpha(38)
         p.setBrush(QBrush(bcol))
+        p.setPen(Qt.NoPen)
         p.drawRoundedRect(track, radius, radius)
 
         # Fill (gradient colour) with rounded caps.
@@ -307,8 +252,34 @@ class LinearDashboardRenderer:
             p.setBrush(QBrush(g))
             p.drawRoundedRect(fill, radius, radius)
 
-        # Selection: green under-glow + bright seam are already drawn by the
-        # focus branch of the glow above (focus -> green, larger bloom, seam).
+        # Selection: green glowing outline around the selected bar, faded by focus.
+        if focus and fill.width() > 0:
+            self._paint_outline(p, track, focus_color, radius, f)
+
+    @staticmethod
+    def _paint_outline(p, rect, focus_color, radius: float, f: float) -> None:
+        """Green glowing outline around the focused bar (soft glow + bright core)."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QPen
+
+        c0 = QColor(*focus_color)
+        p.setBrush(Qt.NoBrush)
+        core = max(2.2, rect.height() * 0.05)
+        for mult, alpha in ((5.0, 26), (2.8, 60), (1.5, 120)):
+            c = QColor(c0)
+            c.setAlpha(int(alpha * f))
+            pen = QPen(c, core * mult)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.drawRoundedRect(rect, radius, radius)
+        c = QColor(c0)
+        c.setAlpha(int(255 * f))
+        pen = QPen(c, core)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.drawRoundedRect(rect, radius, radius)
 
     @staticmethod
     def _under_glow(p, rect, color, t: float, strength: float, *,
@@ -366,19 +337,19 @@ class LinearDashboardRenderer:
         stride = img.bytesPerLine()
         return Image.frombuffer("RGB", (w, h), raw, "raw", "RGB", stride, 1)
 
-    def _paint_text_pil(self, img: Image.Image, specs: list[dict], positions,
-                        text_color: tuple[int, int, int]) -> None:
+    def _paint_text_pil(self, img: Image.Image, specs: list[dict],
+                        layout, text_color: tuple[int, int, int]) -> None:
         from PIL import ImageDraw
 
         d = ImageDraw.Draw(img)
-        for spec, pos in zip(specs, positions, strict=True):
-            cy = int(pos + self._top)
-            length = spec["length"]
-            left = int((self._size[0] - length) / 2.0)
+        for spec, geo in zip(specs, layout.geometry, strict=True):
+            cy = int(geo.center_y)
+            left = int(geo.x)
+            length = int(geo.width)
             _pil_text(d, spec["label"], left + 14, cy - 16, size=26, fill=text_color)
             font = _pil_font(26)
             value_w = d.textlength(spec["text"], font=font)
-            _pil_text(d, spec["text"], left + int(length) - 14 - int(value_w),
+            _pil_text(d, spec["text"], left + length - 14 - int(value_w),
                       cy - 16, size=26, fill=text_color)
 
     def _focus_factor(self, t: float, i: int, n: int) -> float:
