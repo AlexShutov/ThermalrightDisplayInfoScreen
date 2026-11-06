@@ -172,7 +172,8 @@ class LinearDashboardRenderer:
         size: tuple[int, int],
         background=None,
     ) -> bytes:
-        """Render one eased frame and return raw RGB bytes (``w*h*3``)."""
+        """Render one eased frame as raw bytes (RGBA ``w*h*4`` for the transparent
+        overlay; the Pillow-fallback images stay ``w*h*3``)."""
         self._size = (int(size[0]), int(size[1]))
         # Advance the value-easing clock by one step per RENDER: trcc re-renders
         # at a capped cadence (source.fps) or on a real change, so the value tween
@@ -262,7 +263,7 @@ class LinearDashboardRenderer:
             for i in range(n):
                 f = focus[i] if i < len(focus) else 0.0
                 if f > 0.0:
-                    self._paint_glow_pil(pil, rects[i], focus_color, f)
+                    pil = self._paint_glow_pil(pil, rects[i], focus_color, f)
         if specs:
             self._paint_text_pil(
                 pil, specs, layout, pal["text"],
@@ -349,13 +350,19 @@ class LinearDashboardRenderer:
                       center_y - LABEL_PAD_Y, size=LABEL_FONT_SIZE, fill=text_color_rgb)
 
     @staticmethod
-    def _paint_glow_pil(img, rect, focus_color, strength: float) -> None:
-        """Накладывает плавную зелёную тень ТОЛЬКО наружу ``rect`` на ``img``.
+    def _paint_glow_pil(img, rect, focus_color, strength: float):
+        """Возвращает ``img`` с плавной зелёной тенью ТОЛЬКО наружу ``rect``.
 
         Рисует силуэт бара (скруглённый прямоугольник), размывает его гауссовым
         блюром (настоящий плавный градиент, без дискретных колец), затем вырезает
         из размытой маски собственный footprint бара, чтобы свет расходился только
         вне бара и не тонировал заливку.  ``strength`` (0..1) = уровень фокуса.
+
+        Возвращает обработанный кадр: ``outward_alpha`` кладётся в альфа-канал
+        полноразмерного светового слоя, который смешивается с ``img`` через
+        ``Image.alpha_composite`` (SourceOver).  Метод ``img.alpha_composite``
+        полагался на изменение изображения на месте и в Pillow 13 этого не
+        гарантирует, поэтому смешение здесь — статическое и возвращает новый кадр.
         """
         from PIL import Image, ImageDraw, ImageFilter
 
@@ -364,7 +371,7 @@ class LinearDashboardRenderer:
         bar_width = int(rect.width())
         bar_height = int(rect.height())
         if bar_width <= 0 or bar_height <= 0:
-            return
+            return img
         # Ограничиваем область тени вокруг бара, чтобы не размывать весь кадр.
         box_left = max(0, bar_left - GLOW_MARGIN_PX)
         box_top = max(0, bar_top - GLOW_MARGIN_PX)
@@ -373,7 +380,7 @@ class LinearDashboardRenderer:
         box_width = box_right - box_left
         box_height = box_bottom - box_top
         if box_width <= 0 or box_height <= 0:
-            return
+            return img
         corner_radius = max(MIN_BAR_CORNER_RADIUS, bar_height / 2.0)
         silhouette = Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN)
         ImageDraw.Draw(silhouette).rounded_rectangle(
@@ -390,9 +397,13 @@ class LinearDashboardRenderer:
             Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN),
             outside_mask,
         ).point(lambda v: int(v * min(1.0, max(0.0, strength))))
-        glow = Image.new(IMAGE_MODE_RGBA, (box_width, box_height), (*focus_color, LUMINANCE_MIN))
-        glow.putalpha(outward_alpha)
-        img.paste(glow, (box_left, box_top), outward_alpha)
+        # Световой слой: полноразмерный RGBA (цвет фокуса), альфа = outward_alpha
+        # ровно в области вокруг бара, 0 вне её.
+        light = Image.new(IMAGE_MODE_RGBA, img.size, (*focus_color, LUMINANCE_MIN))
+        alpha_channel = light.getchannel("A")
+        alpha_channel.paste(outward_alpha, (box_left, box_top))
+        light.putalpha(alpha_channel)
+        return Image.alpha_composite(img, light)
 
     @staticmethod
     def _paint_bar(p, rect, fill_frac: float, color, dim: float) -> None:
