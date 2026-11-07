@@ -17,14 +17,14 @@ def test_write_read_roundtrip(tmp_path):
 
 
 def test_seq_monotonic_across_restart(tmp_path):
-    p = tmp_path / "state.json"
-    s = AtomicStateFile(str(p))
-    assert s.write({"mode": "day"}) == 1
-    assert s.write({"mode": "night"}) == 2
+    state_path = tmp_path / "state.json"
+    store = AtomicStateFile(str(state_path))
+    assert store.write({"mode": "day"}) == 1
+    assert store.write({"mode": "night"}) == 2
     # a fresh store recovers the seq so a consumer never sees "older than before"
-    s2 = AtomicStateFile(str(p))
-    assert s2.write({"mode": "day"}) == 3
-    assert s2.read()["mode"] == "day"
+    store_restarted = AtomicStateFile(str(state_path))
+    assert store_restarted.write({"mode": "day"}) == 3
+    assert store_restarted.read()["mode"] == "day"
 
 
 def test_no_temp_file_left_after_write(tmp_path):

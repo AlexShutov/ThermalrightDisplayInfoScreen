@@ -32,12 +32,12 @@ class AtomicStateFile:
         payload = dict(state)
         payload["seq"] = self._seq
         payload["updated_at"] = time.time()
-        tmp = f"{self._path}.tmp"
-        with open(tmp, "w") as fh:
+        temp_path = f"{self._path}.tmp"
+        with open(temp_path, "w") as fh:
             json.dump(payload, fh)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, self._path)
+        os.replace(temp_path, self._path)
         return self._seq
 
     def read(self) -> dict | None:

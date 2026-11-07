@@ -76,16 +76,16 @@ def test_selection_bottom_selected_keeps_2mm():
 
 def test_selection_no_overflow_and_stable_x_width():
     lm = SelectionLayoutManager()
-    r = lm.measure(W, H, 6, focus=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
-    for geo in r.geometry:
+    result_first = lm.measure(W, H, 6, focus=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    for geo in result_first.geometry:
         assert geo.x >= 0 and geo.y >= 0
         assert geo.x + geo.width <= W + 1e-6
         assert geo.y + geo.height <= H + 1e-6
     # x / width are stable across focus (the measured geometry never changes).
-    r2 = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    result_second = lm.measure(W, H, 6, focus=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     for i in range(6):
-        assert abs(r[i].x - r2[i].x) < 1e-6
-        assert abs(r[i].width - r2[i].width) < 1e-6
+        assert abs(result_first[i].x - result_second[i].x) < 1e-6
+        assert abs(result_first[i].width - result_second[i].width) < 1e-6
 
 
 def test_selection_crowded_keeps_margins_and_no_overflow():

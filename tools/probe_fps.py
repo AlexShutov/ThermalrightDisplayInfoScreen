@@ -77,7 +77,7 @@ def main():
         ack_times = []
         while time.perf_counter() < end:
             pos = 0
-            t0 = time.perf_counter()
+            sample_start = time.perf_counter()
             while pos < len(frame):
                 n = min(USB_WRITE, len(frame) - pos)
                 dev.write(EP_OUT, frame[pos:pos + n], timeout=5000)
@@ -86,7 +86,7 @@ def main():
                 dev.read(EP_IN, 512, timeout=1000)
             except Exception:
                 pass
-            ack_times.append((time.perf_counter() - t0) * 1000)
+            ack_times.append((time.perf_counter() - sample_start) * 1000)
             count += 1
         fps = count / ((ack_times[-1] / 1000) if ack_times else 1)
         avg = sum(ack_times) / len(ack_times) if ack_times else 0
