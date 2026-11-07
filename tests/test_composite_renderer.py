@@ -129,8 +129,61 @@ def test_composite_uses_all_gauges_for_rings(composite, monkeypatch):
     linear = LinearDashboardRenderer((1438, 440), background=None, fps=8.0, layout=None)
     renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
     renderer(setup, values, {}, size, None)
-    # Потолка больше нет: кольца (и левые столбцы) используют ВСЕ датчики (6).
+    # По умолчанию потолка нет: кольца (и левые столбцы) используют ВСЕ датчики (6).
     assert captured["count"] == 6
+
+
+def test_composite_rings_limited_to_first_gauges(composite, monkeypatch):
+    import activityrings.rings as rings_mod  # noqa: PLC0415
+
+    from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
+
+    CompositeDashboardRenderer, _ = composite
+    captured: dict[str, list[str]] = {}
+
+    def spy(entries, size, progress=None, **kwargs):
+        from PIL import Image
+
+        # render_gauge_rings получает кортежи (ring_key, label, цвет, прогресс).
+        captured["keys"] = [entry[0] for entry in entries]
+        return Image.new("RGBA", (int(size[0]), int(size[1])), (0, 0, 0, 0))
+
+    monkeypatch.setattr(rings_mod, "render_gauge_rings", spy)
+
+    size = (1920, 440)
+    setup = [
+        {"id": f"g{i}", "label": f"G{i}", "min": 0, "max": 100, "unit": "%"}
+        for i in range(6)
+    ]
+    values = {g["id"]: 50 + i for i, g in enumerate(setup)}
+    linear = LinearDashboardRenderer((1438, 440), background=None, fps=8.0, layout=None)
+    renderer = CompositeDashboardRenderer(
+        linear, size, px_per_mm=6.86, value_palette_on=True, ring_max_gauges=4
+    )
+    renderer(setup, values, {}, size, None)
+    # Кольца показывают только первые 4 датчика (левый индикатор — все 6).
+    assert sorted(captured["keys"]) == ["g0", "g1", "g2", "g3"]
+
+
+def test_composite_left_includes_sensors_missing_from_setup(composite):
+    from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
+
+    CompositeDashboardRenderer, _ = composite
+    size = (1920, 440)
+    setup = [
+        {"id": "cpu", "label": "CPU", "min": 0, "max": 100, "unit": "%"},
+        {"id": "gpu", "label": "GPU", "min": 0, "max": 100, "unit": "%"},
+        {"id": "ram", "label": "RAM", "min": 0, "max": 100, "unit": "%"},
+        {"id": "temp", "label": "TEMP", "min": 0, "max": 100, "unit": "C"},
+    ]
+    # Сенсоры поставляют 6 датчиков, а настроено только 4: левый ряд должен показать все 6.
+    values = {"cpu": 1.0, "gpu": 2.0, "ram": 3.0, "temp": 4.0, "disk": 5.0, "fps": 6.0}
+    linear = LinearDashboardRenderer((1438, 440), background=None, fps=8.0, layout=None)
+    renderer = CompositeDashboardRenderer(
+        linear, size, px_per_mm=6.86, value_palette_on=True, ring_max_gauges=4
+    )
+    left_gauges = renderer._left_gauges(setup, values)
+    assert [g["id"] for g in left_gauges] == ["cpu", "gpu", "ram", "temp", "disk", "fps"]
 
 
 def test_composite_renderer_emits_transparent_overlay(composite):

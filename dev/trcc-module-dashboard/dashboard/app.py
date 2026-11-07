@@ -119,6 +119,27 @@ def _optional_float_env(name: str) -> float | None:
         return None
 
 
+def _optional_int_env(name: str) -> int | None:
+    """Int из env (``HARDWARESCREEN_*``) либо ``None``, если пусто/не число."""
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("dashboard: env %s=%r is not an int; ignored", name, raw)
+        return None
+
+
+def _rings_max_gauges(default: int) -> int:
+    """Сколько первых датчиков показывать кольцами (``HARDWARESCREEN_RINGS_MAX_GAUGES``).
+
+    Пустое/не число/`<= 0` → ``default`` (иначе работали бы все кольца без лимита).
+    """
+    value = _optional_int_env("HARDWARESCREEN_RINGS_MAX_GAUGES")
+    return default if value is None or value <= 0 else value
+
+
 def _ring_corner_fraction(
     env_name: str, mirror_fraction: float | None, default: float
 ) -> float:
@@ -163,6 +184,10 @@ def _resolve_px_per_mm(size: tuple[int, int], env_value: float | None) -> float:
 
 
 # --- Константы композита «линейный индикатор слева + кольца датчиков справа» ---
+# Стандартное число датчиков, показываемых КОЛЬЦАМИ: «первые 4» (чаще всего это
+# конфигурируемые датчики, а весь ряд линейного слева — все сенсоры).  Переопределяется
+# через ``HARDWARESCREEN_RINGS_MAX_GAUGES``.
+COMPOSITE_RINGS_MAX_GAUGES = 4
 # Отступ (маржа) от краёв панели до ЗОНЫ КОЛЕЦ, мм. Зона колец занимает почти весь
 # экран (полную высоту панели), а отступ до края задаёт рендерер колец (edge_margin).
 COMPOSITE_RINGS_MARGIN_MM = 2.0
@@ -252,6 +277,7 @@ class CompositeDashboardRenderer:
         value_palette_on: bool,
         ring_start_corner_fraction: float = 0.5,
         ring_end_corner_fraction: float = 0.0,
+        ring_max_gauges: int | None = None,
     ):
         self._linear = linear
         self._size = (int(size[0]), int(size[1]))
@@ -262,6 +288,10 @@ class CompositeDashboardRenderer:
         self._rings_y = regions["rings_y"]
         self._value_palette_on = value_palette_on
         self._px_per_mm = px_per_mm
+        # Сколько первых датчиков показывать КОЛЬЦАМИ. В отличие от левого линейного
+        # (там всегда все столбцы), кольца могут показывать только первые ``N`` датчиков.
+        # ``None`` — все датчики.
+        self._ring_max_gauges = ring_max_gauges
         # Скругление концов сектора колец: та же пропорция, что у линейного
         # (по умолчанию), с возможностью отдельно переопределить через env.
         self._ring_start_corner = ring_start_corner_fraction
@@ -277,14 +307,15 @@ class CompositeDashboardRenderer:
         canvas = Image.new("RGBA", self._size, (0, 0, 0, 0))
         if (setup or []) and (values or {}):
             now = time.monotonic()
-            # Один и тот же ПОЛНЫЙ набор датчиков на обоих панелях (все столбцы слева
-            # и все кольца справа), иначе слева и справа окажутся разные данные.
-            shared_gauges = list(setup)
+            # Левый ряд (линейный индикатор) показывает ВСЕ сенсоры (из ``setup`` плюс те,
+            # что есть только в ``values``); кольца справа — только первые ``N`` из них.
+            shared_gauges = self._left_gauges(setup, values)
             raw_left = self._linear(shared_gauges, values, palette, self._left_size, None)
             left_img = self._bytes_to_image(raw_left, self._left_size)
             if left_img is not None:
                 canvas.alpha_composite(left_img, (0, 0))
-            rings_img = self._render_rings(shared_gauges, values, pal, now)
+            rings_gauges = self._rings_gauges(shared_gauges)
+            rings_img = self._render_rings(rings_gauges, values, pal, now)
             if rings_img is not None:
                 canvas.alpha_composite(rings_img, (self._rings_x, self._rings_y))
         return canvas.tobytes()
@@ -306,6 +337,36 @@ class CompositeDashboardRenderer:
                    g.get("unit")) for g in (setup or [])),
             tuple(sorted((values or {}).items())),
         )
+
+    def _left_gauges(self, setup, values):
+        """Набор датчиков для ЛЕВОГО ряда (все столбцы).
+
+        Берём датчики из ``setup`` (у них есть min/max/label/unit), плюс синтезируем
+        столбец для каждого датчика, который есть только в ``values`` — так линейный
+        ряд показывает ВСЕ сенсоры, даже если в настройках задано меньше (например,
+        setup = 4 конфигурируемых, а сенсоры дают 6).
+        """
+        gauges = list(setup)
+        known_ids = {gauge.get("id") for gauge in gauges}
+        for sensor_id in sorted((values or {}).keys()):
+            if sensor_id not in known_ids:
+                known_ids.add(sensor_id)
+                gauges.append(
+                    {
+                        "id": sensor_id,
+                        "label": str(sensor_id).upper(),
+                        "unit": "",
+                        "min": 0.0,
+                        "max": 100.0,
+                    }
+                )
+        return gauges
+
+    def _rings_gauges(self, shared_gauges):
+        """Набор датчиков для колец: все, либо только первые ``N`` (``ring_max_gauges``)."""
+        if self._ring_max_gauges is not None and self._ring_max_gauges > 0:
+            return list(shared_gauges[: self._ring_max_gauges])
+        return list(shared_gauges)
 
     def _render_rings(self, setup, values, pal, now) -> Image.Image | None:
         try:
@@ -472,6 +533,7 @@ class DashboardModule(BaseModule, key=_KEY):
                         "HARDWARESCREEN_RING_END_CORNER_FRACTION",
                         renderer_kwargs["fill_corner_fraction"], 0.0,
                     ),
+                    ring_max_gauges=_rings_max_gauges(COMPOSITE_RINGS_MAX_GAUGES),
                 )
             return LinearDashboardRenderer(size, background=bg_image, **renderer_kwargs)
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
