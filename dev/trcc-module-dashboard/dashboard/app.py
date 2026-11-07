@@ -64,6 +64,23 @@ def _optional_float_env(name: str) -> float | None:
         return None
 
 
+def _ring_corner_fraction(
+    env_name: str, mirror_fraction: float | None, default: float
+) -> float:
+    """Доля скругления конца сектора колец с той же пропорцией, что у линейного.
+
+    Приоритет: явное ``HARDWARESCREEN_RING_*_CORNER_FRACTION`` → та же доля, что
+    у линейного (``mirror_fraction``) → ``default``.  Зажимается в [0, 0.5] — доля
+    толщины кольца (как у линейного — доля толщины столбца).
+    """
+    override = _optional_float_env(env_name)
+    if override is not None:
+        return min(max(0.0, override), 0.5)
+    if mirror_fraction is not None:
+        return min(max(0.0, mirror_fraction), 0.5)
+    return default
+
+
 def _color_palette_enabled() -> bool:
     """Включена ли цветовая палитра столбцов (градиент «значение → цвет»).
 
@@ -180,6 +197,8 @@ class CompositeDashboardRenderer:
         *,
         px_per_mm: float,
         value_palette_on: bool,
+        ring_start_corner_fraction: float = 0.5,
+        ring_end_corner_fraction: float = 0.0,
     ):
         self._linear = linear
         self._size = (int(size[0]), int(size[1]))
@@ -192,6 +211,10 @@ class CompositeDashboardRenderer:
         self._px_per_mm = px_per_mm
         max_rings = _optional_float_env("HARDWARESCREEN_COMPOSITE_MAX_RINGS")
         self._max_rings = int(max_rings) if max_rings is not None else COMPOSITE_MAX_RINGS
+        # Скругление концов сектора колец: та же пропорция, что у линейного
+        # (по умолчанию), с возможностью отдельно переопределить через env.
+        self._ring_start_corner = ring_start_corner_fraction
+        self._ring_end_corner = ring_end_corner_fraction
         # Драйвер выделения колец: общий ``SelectionController`` (тот же механизм, что
         # у линейного), выбирает «какое кольцо подсветить» на каждое окно данных.
         self._ring_selection = _ensure_selection_controller()(
@@ -296,6 +319,8 @@ class CompositeDashboardRenderer:
                 gap_px=float(gap_px),
                 inner_radius_px=float(inner_radius_px),
                 track_color=tuple(pal.get("muted") or (0, 0, 0)),
+                start_corner_fraction=self._ring_start_corner,
+                end_corner_fraction=self._ring_end_corner,
             )
         except Exception as exc:  # noqa: BLE001 - слишком много датчиков и т.п.
             log.warning("dashboard: cannot render gauge rings: %s", exc)
@@ -389,6 +414,14 @@ class DashboardModule(BaseModule, key=_KEY):
                 return CompositeDashboardRenderer(
                     linear, size, px_per_mm=px_per_mm,
                     value_palette_on=_color_palette_enabled(),
+                    ring_start_corner_fraction=_ring_corner_fraction(
+                        "HARDWARESCREEN_RING_START_CORNER_FRACTION",
+                        renderer_kwargs["bar_corner_fraction"], 0.5,
+                    ),
+                    ring_end_corner_fraction=_ring_corner_fraction(
+                        "HARDWARESCREEN_RING_END_CORNER_FRACTION",
+                        renderer_kwargs["fill_corner_fraction"], 0.0,
+                    ),
                 )
             return LinearDashboardRenderer(size, background=bg_image, **renderer_kwargs)
         log.info("dashboard: using Pillow renderer (HARDWARESCREEN_RENDERER=%s)", mode)
