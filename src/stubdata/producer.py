@@ -7,6 +7,7 @@ so the loop is testable with a recording fake.
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import logging
 import random
 import time
 from collections.abc import Callable
@@ -14,6 +15,8 @@ from typing import Any
 
 from .client import ManagerClient
 from .config import Config
+
+log = logging.getLogger("hardwarescreen.stubdata")
 
 GAUGE_TEMPLATES: list[dict[str, Any]] = [
     {"id": "cpu", "label": "CPU", "unit": "%"},
@@ -54,5 +57,10 @@ class Producer:
     def run(self, stop: Callable[[], bool] | None = None) -> None:
         self.start()
         while not (stop and stop()):
-            self.step()
+            try:
+                self.step()
+            except OSError:
+                # Транзиентный сбой сети менеджера (таймаут POST и т.п.) не должен
+                # ронять продюсера навсегда — пропускаем тик и пробуем в следующем.
+                log.warning("stubdata: manager unreachable, skipping tick", exc_info=True)
             time.sleep(self.cfg.poll_s)
