@@ -870,14 +870,12 @@ class LinearDashboardRenderer:
             glow_margin_px = GLOW_MARGIN_PX
         if glow_blur_radius_px is None:
             glow_blur_radius_px = GLOW_BLUR_RADIUS_PX
-        from PIL import Image, ImageChops, ImageDraw, ImageFilter
+        from PIL import Image, ImageChops, ImageFilter
 
         if fill_direction is None:
             fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
         if fill_direction not in ALLOWED_FILL_DIRECTIONS:
             fill_direction = FILL_DIRECTION_LEFT_TO_RIGHT
-        bar_left = int(bar_rect.x())
-        bar_top = int(bar_rect.y())
         bar_width = int(bar_rect.width())
         bar_height = int(bar_rect.height())
         if bar_width <= 0 or bar_height <= 0:
@@ -903,12 +901,12 @@ class LinearDashboardRenderer:
         fill_fraction = (fill_height / bar_height) if vertical else (fill_width / bar_width)
         fill_radius = _fill_boundary_radius(fill_fraction, cap_size, fill_corner_fraction)
         # Силуэт = капсула бара ∩ регион заливки со скруглением границы роста.
-        silhouette = Image.new(IMAGE_MODE_LUMINANCE, (box_width, box_height), LUMINANCE_MIN)
-        ImageDraw.Draw(silhouette).rounded_rectangle(
-            [bar_left - box_left, bar_top - box_top,
-             bar_left - box_left + bar_width, bar_top - box_top + bar_height],
-            radius=track_radius,
-            fill=LUMINANCE_MAX,
+        # Капсулу рисуем Qt-QPainter с антиалиасингом (тот же хелпер, что и маску
+        # региона заливки), а не ``ImageDraw.rounded_rectangle``: Pillow не сглаживает
+        # кромку, из-за чего у скругления ПОДСВЕЧЕННОГО столбца ореол «шакалится».
+        silhouette = _rounded_region_mask(
+            bar_rect, box_left, box_top, box_width, box_height,
+            track_radius, track_radius, track_radius, track_radius,
         )
         region_mask = _rounded_region_mask(
             fill_rect, box_left, box_top, box_width, box_height,
