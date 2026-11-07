@@ -396,6 +396,7 @@ class CompositeDashboardRenderer:
                 track_color=tuple(pal.get("muted") or (0, 0, 0)),
                 start_corner_fraction=self._ring_start_corner,
                 end_corner_fraction=self._ring_end_corner,
+                full_ring_glow=self._value_palette_on,
             )
         except Exception as exc:  # noqa: BLE001 - слишком много датчиков и т.п.
             log.warning("dashboard: cannot render gauge rings: %s", exc)
