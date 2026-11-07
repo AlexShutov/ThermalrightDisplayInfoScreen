@@ -73,19 +73,19 @@ def _focus_color() -> tuple[int, int, int]:
     return hex_to_rgb(os.environ.get("HARDWARESCREEN_FOCUS_COLOR", "#00c85a"))
 
 
-# ``SelectionController`` из common-сабмодуля импортируем лениво — он headless
-# (без Qt/Pillow), но пакет ``common`` живёт в ``DashboardWidgets``, поэтому
-# основной ``hardwarescreen`` не должен требовать сабмодуль на импорте.
+# ``common.selection`` импортируем лениво — он headless (без Qt/Pillow), но живёт в
+# сабмодуле ``DashboardWidgets``, поэтому основной ``hardwarescreen`` не должен
+# требовать сабмодуль на импорте.
 _SELECTION = None
 
 
-def _ensure_selection_controller():
-    """Lazily import the shared ``SelectionController`` (no submodule at import)."""
+def _ensure_selection_module():
+    """Lazily import the shared ``common.selection`` module (no submodule at import)."""
     global _SELECTION
     if _SELECTION is None:
-        from common.selection import SelectionController  # noqa: PLC0415
+        import common.selection as selection  # noqa: PLC0415
 
-        _SELECTION = SelectionController
+        _SELECTION = selection
     return _SELECTION
 
 
@@ -173,7 +173,7 @@ class LinearDashboardRenderer:
         # Выбор меняется вместе со сменой данных (через раз) и держится всё окно
         # данных (~5 с), а не мигает на собственном таймере.  Логика выделения
         # общая (см. ``common/selection``) — её же использует кольцевой индикатор.
-        self._selection = _ensure_selection_controller()(
+        self._selection = _ensure_selection_module().SelectionController(
             transition_s=self._selection_transition_s, ease=self._ease, rng=self._rng
         )
         self._last_content_signature: object | None = None
@@ -309,7 +309,7 @@ class LinearDashboardRenderer:
 
         img = self._make_image(pal, background)
         selection_on = self._layout.is_selection_enabled
-        active = self._active_index(focus, selection_on)
+        selection_active_epsilon = _ensure_selection_module().SELECTION_ACTIVE_EPSILON
         selection_strength = max(focus) if (selection_on and focus) else 0.0
         focus_color = _focus_color()
         # При включённой цветовой палитре подложка (задний фон столбца) — ОДИН и
@@ -331,11 +331,13 @@ class LinearDashboardRenderer:
             self._layout.selection_scale, self._bar_vertical, min_gap_px,
         )
 
-        # Draw in increasing z-order: dimmed neighbours first, the selected bar (with
-        # its green glow) last, on top — the correct overlay z-buffer ordering.
+        # Draw in increasing z-order: dimmed neighbours first, the selected bars (with
+        # their glow) last, on top — the correct overlay z-buffer ordering.  Выбранных
+        # может быть несколько, поэтому «поверх» — любой бар с ненулевым фокусом.
         order = sorted(
             range(n),
-            key=lambda i: Z_FOREGROUND if i == active
+            key=lambda i: Z_FOREGROUND
+            if (selection_on and focus[i] > selection_active_epsilon)
             else Z_BASE + Z_FOCUS_WEIGHT * (focus[i] if selection_on else 0.0),
         )
         p = QPainter(img)
@@ -684,10 +686,6 @@ class LinearDashboardRenderer:
             p.drawRoundedRect(rect, track_radius, track_radius)
             p.restore()
         p.setOpacity(1.0)
-
-    def _active_index(self, focus: list[float], selection_on: bool):
-        """Index of the currently selected bar (the one with the highest focus)."""
-        return self._selection.active_index_of(focus, selection_on)
 
     def _select_strategy(self, focus: list[float], selection_on: bool):
         """Выбирает стратегию роста по числу выбранных индикаторов.

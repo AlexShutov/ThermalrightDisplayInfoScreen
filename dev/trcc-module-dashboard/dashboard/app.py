@@ -204,11 +204,14 @@ class CompositeDashboardRenderer:
         canvas = Image.new("RGBA", self._size, (0, 0, 0, 0))
         if (setup or []) and (values or {}):
             now = time.monotonic()
-            raw_left = self._linear(setup, values, palette, self._left_size, None)
+            # Один и тот же набор датчиков на обоих панелях (не больше ``_max_rings``),
+            # иначе слева и справа окажутся разные данные.
+            shared_gauges = setup[: self._max_rings]
+            raw_left = self._linear(shared_gauges, values, palette, self._left_size, None)
             left_img = self._bytes_to_image(raw_left, self._left_size)
             if left_img is not None:
                 canvas.alpha_composite(left_img, (0, 0))
-            rings_img = self._render_rings(setup, values, pal, now)
+            rings_img = self._render_rings(shared_gauges, values, pal, now)
             if rings_img is not None:
                 canvas.alpha_composite(rings_img, (self._rings_x, self._rings_y))
         return canvas.tobytes()
@@ -268,6 +271,11 @@ class CompositeDashboardRenderer:
             self._ring_selection.enabled = count > 0
             self._ring_selection.advance(now, count)
         focus = self._ring_selection.focus(now, count)
+        # Порядок колец «из центра наружу»: первый датчик линейного (слева) — центральное
+        # (внутреннее) кольцо, последний — внешнее.  Раскладчик колец делает первым
+        # внешнее кольцо, поэтому разворачиваем и порядок колец, и фокус.
+        entries_for_rings = list(reversed(entries))
+        focus_for_rings = list(reversed(focus))
         margin_px = round(COMPOSITE_RINGS_MARGIN_MM * self._px_per_mm)
         gap_mm = _optional_float_env("HARDWARESCREEN_RINGS_GAP_MM")
         if gap_mm is None:
@@ -279,10 +287,10 @@ class CompositeDashboardRenderer:
         inner_radius_px = round(inner_radius_mm * self._px_per_mm)
         try:
             return render_gauge_rings(
-                entries,
+                entries_for_rings,
                 self._rings_size,
                 progress=progress,
-                focus=focus,
+                focus=focus_for_rings,
                 outer_fraction=COMPOSITE_RINGS_OUTER_FRACTION,
                 edge_margin=float(margin_px),
                 gap_px=float(gap_px),
