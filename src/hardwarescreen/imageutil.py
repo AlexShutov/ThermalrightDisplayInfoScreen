@@ -10,6 +10,11 @@ from .protocol import MAX_FRAME_BYTES
 
 QUALITY_LADDER = (85, 75, 65, 55, 45)
 
+# JPEG без субдискретизации цветности (4:4:4): Pillow по умолчанию кодирует 4:2:0,
+# из-за чего тонкие цветные кромки (особенно красно-оранжевые) «шакалятся» —
+# цветность сглаживается блоками 2×2.  Для тонкой заливки датчиков это заметно.
+JPEG_CHROMA_SUBSAMPLING = 0
+
 
 def encode_within_budget(img: Image.Image, budget: int | None = MAX_FRAME_BYTES) -> bytes:
     """JPEG-encode, shrinking quality/scale until it fits ``budget`` bytes."""
@@ -30,5 +35,5 @@ def encode_within_budget(img: Image.Image, budget: int | None = MAX_FRAME_BYTES)
 
 def _jpeg(img: Image.Image, quality: int) -> bytes:
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=quality)
+    img.save(buf, "JPEG", quality=quality, subsampling=JPEG_CHROMA_SUBSAMPLING)
     return buf.getvalue()

@@ -12,6 +12,7 @@ import os
 from PIL import Image
 
 from hardwarescreen.config import Config
+from hardwarescreen.imageutil import encode_within_budget
 from hardwarescreen.protocol import MAX_FRAME_BYTES
 from hardwarescreen.render import Renderer, quantize, should_render
 from tests.fakes import FakeBackground, FakeSource, FakeStore, MockPanel
@@ -66,6 +67,49 @@ def test_encode_within_budget_never_exceeds():
     r = Renderer(cfg, sink=MockPanel(), source=FakeSource())
     jpeg = r._encode_within_budget(img)
     assert len(jpeg) <= MAX_FRAME_BYTES
+
+
+def _jpeg_sampling_factors(data: bytes) -> list[int]:
+    """Достаёт sampling-факторы (H/V) трёх компонент из SOF0/1/2 маркера JPEG.
+
+    Для 4:4:4 все три компоненты имеют фактор ``0x11`` (1×1); для 4:2:0 —
+    Y = ``0x22`` (2×2), а цветоразностные — ``0x11``.  Верхняя/нижняя полубайты —
+    горизонтальное/вертикальное прореживание соответственно.
+    """
+    i = 2  # пропустить SOI (FF D8)
+    while i + 4 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker == 0xD8:
+            i += 2
+            continue
+        if marker == 0xD9:  # EOI
+            break
+        # Длина сегмента включает собственные 2 байта длины.
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        # SOF0/1/2/… — начало кадра: C0..CF (кроме C4 DHT, C8 JPG, CC DAC).
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            num_components = data[i + 9]
+            components_start = i + 10
+            return [data[components_start + 3 * j + 1] for j in range(num_components)]
+        i += 2 + length
+    return []
+
+
+def test_encode_within_budget_uses_no_chroma_subsampling():
+    """JPEG кодируется без субдискретизации цветности (4:4:4).
+
+    Дефолтный 4:2:0 сглаживает цветность блоками 2×2 — тонкие красно-оранжевые
+    кромки колонок датчиков «шакалятся» (цветозависимый артефакт).  Проверяем,
+    что sampling-факторы всех компонент кадра равны 0x11 (без прореживания).
+    """
+    img = Image.new("RGB", (64, 64), (40, 42, 48))
+    jpeg = encode_within_budget(img, budget=200_000)
+    sampling = _jpeg_sampling_factors(jpeg)
+    assert sampling, "ожидали SOF-факторы в JPJ"
+    assert all(factor == 0x11 for factor in sampling), sampling
 
 
 # -- Renderer talks through injected ports --------------------------------
