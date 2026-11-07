@@ -235,6 +235,16 @@
 - Оба варианта применяются к текущим изменениям в **обоих репозиториях** (main + сабмодуль `DashboardWidgets`):
   сначала коммиты+пуш сабмодуля, затем подъём gitlink и коммиты+пуш main. Стиль сообщений — `<тип>: <описание>`
   на русском (feat/fix/refactor/docs/chore), один коммит = одна задача.
+- **`пп`** — **перекомпилировать и перезапустить приложение**: сначала пересинхронизировать исходники
+  модуля дашборда (`dev/trcc-module-dashboard/dashboard/app.py` + `module.json`) в установленную папку
+  `~/Library/Application Support/trcc-user/modules/dashboard/`, затем остановить и заново запустить
+  демон `trcc daemon` с тем же env-набором, что и раньше (`HARDWARESCREEN_COMPOSITE=rings_right`,
+  `HARDWARESCREEN_STATE_FILE=<проект>/manager_state.json`, `HARDWARESCREEN_FILL_DIRECTION=bottom_to_top`,
+  `HARDWARESCREEN_LAYOUT=explicit_gap`, `HARDWARESCREEN_BAR_SIZE_MM=10`, `HARDWARESCREEN_GAP_MM=3`,
+  `HARDWARESCREEN_PADDING_MM=5`, `HARDWARESCREEN_ALIGN=left`, `HARDWARESCREEN_BAR_CORNER_FRACTION=0.3`,
+  `HARDWARESCREEN_FILL_CORNER_FRACTION=0.3`; `HARDWARESCREEN_STATE_FILE` берём из окружения демона).
+  Нужен, когда меняется `app.py` (композит/кольца) и нужно увидеть результат на панели. `rings.py` —
+  editable (живой), его синхронизация не нужна.
 
 ## Поток данных (практический)
 
