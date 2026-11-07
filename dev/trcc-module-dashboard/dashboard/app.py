@@ -28,6 +28,22 @@ from manager.store import AtomicStateFile
 
 log = logging.getLogger("hardwarescreen.dashboard")
 
+
+# ``SelectionController`` из common-сабмодуля импортируем лениво (headless, без Qt),
+# чтобы модуль собирался, даже если сабмодуль не разложен на путях.
+_SELECTION = None
+
+
+def _ensure_selection_controller():
+    """Lazily import the shared ``SelectionController`` (no submodule at import)."""
+    global _SELECTION
+    if _SELECTION is None:
+        from common.selection import SelectionController  # noqa: PLC0415
+
+        _SELECTION = SelectionController
+    return _SELECTION
+
+
 _KEY = "dashboard"
 
 # Физическая диагональ панели Trofeo Vision (маркетинговый «11.3") в дюймах — для
@@ -90,6 +106,10 @@ COMPOSITE_RINGS_OUTER_FRACTION = 0.96
 COMPOSITE_MAX_RINGS = 4
 # Зазор между левым линейным регионом и правой зоной колец, px.
 COMPOSITE_INNER_GAP_PX = 8
+
+# Время нарастания/затухания выделения колец в начале окна данных (выбор меняется
+# вместе со сменой данных и держится весь показ ~5 с); то же, что у линейного.
+RING_SELECTION_TRANSITION_S = 0.6
 
 
 def _composite_enabled() -> bool:
@@ -172,16 +192,23 @@ class CompositeDashboardRenderer:
         self._px_per_mm = px_per_mm
         max_rings = _optional_float_env("HARDWARESCREEN_COMPOSITE_MAX_RINGS")
         self._max_rings = int(max_rings) if max_rings is not None else COMPOSITE_MAX_RINGS
+        # Драйвер выделения колец: общий ``SelectionController`` (тот же механизм, что
+        # у линейного), выбирает «какое кольцо подсветить» на каждое окно данных.
+        self._ring_selection = _ensure_selection_controller()(
+            transition_s=RING_SELECTION_TRANSITION_S
+        )
+        self._rings_signature: object | None = None
 
     def __call__(self, setup, values, palette, size, background=None) -> bytes:
         pal = _palette(palette or {})
         canvas = Image.new("RGBA", self._size, (0, 0, 0, 0))
         if (setup or []) and (values or {}):
+            now = time.monotonic()
             raw_left = self._linear(setup, values, palette, self._left_size, None)
             left_img = self._bytes_to_image(raw_left, self._left_size)
             if left_img is not None:
                 canvas.alpha_composite(left_img, (0, 0))
-            rings_img = self._render_rings(setup, values, pal)
+            rings_img = self._render_rings(setup, values, pal, now)
             if rings_img is not None:
                 canvas.alpha_composite(rings_img, (self._rings_x, self._rings_y))
         return canvas.tobytes()
@@ -195,7 +222,16 @@ class CompositeDashboardRenderer:
             return Image.frombytes("RGB", size, raw)
         return None
 
-    def _render_rings(self, setup, values, pal) -> Image.Image | None:
+    @staticmethod
+    def _ring_content_signature(setup, values):
+        """Отпечаток данных колец — его смена открывает новое окно выделения."""
+        return (
+            tuple((g.get("id"), g.get("label"), g.get("min"), g.get("max"),
+                   g.get("unit")) for g in (setup or [])),
+            tuple(sorted((values or {}).items())),
+        )
+
+    def _render_rings(self, setup, values, pal, now) -> Image.Image | None:
         try:
             from activityrings.rings import render_gauge_rings
 
@@ -225,6 +261,13 @@ class CompositeDashboardRenderer:
             progress[ring_key] = fraction
         if not entries:
             return None
+        count = len(entries)
+        sig = self._ring_content_signature(setup, values)
+        if sig != self._rings_signature:
+            self._rings_signature = sig
+            self._ring_selection.enabled = count > 0
+            self._ring_selection.advance(now, count)
+        focus = self._ring_selection.focus(now, count)
         margin_px = round(COMPOSITE_RINGS_MARGIN_MM * self._px_per_mm)
         gap_mm = _optional_float_env("HARDWARESCREEN_RINGS_GAP_MM")
         if gap_mm is None:
@@ -239,6 +282,7 @@ class CompositeDashboardRenderer:
                 entries,
                 self._rings_size,
                 progress=progress,
+                focus=focus,
                 outer_fraction=COMPOSITE_RINGS_OUTER_FRACTION,
                 edge_margin=float(margin_px),
                 gap_px=float(gap_px),

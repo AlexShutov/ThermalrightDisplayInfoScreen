@@ -175,3 +175,31 @@ def test_composite_renderer_empty_setup_is_safe(composite):
     renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
     frame = renderer([], {}, {}, size, None)
     assert len(frame) == size[0] * size[1] * 4
+
+
+def test_composite_rings_selection_driver(composite):
+    """Общий SelectionController подсвечивает кольцо и чередует окна данных."""
+    CompositeDashboardRenderer, _ = composite
+    from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
+
+    size = (1920, 440)
+    setup = [
+        {"id": "cpu", "label": "CPU", "min": 0, "max": 100, "unit": "%"},
+        {"id": "gpu", "label": "GPU", "min": 0, "max": 100, "unit": "%"},
+        {"id": "ram", "label": "RAM", "min": 0, "max": 200, "unit": "GB"},
+    ]
+    linear = LinearDashboardRenderer(
+        (1438, 440), background=None, fps=8.0, layout=None
+    )
+    renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
+
+    # Первое окно данных — «выбрать»: активный индекс в пределах числа колец.
+    renderer(setup, {"cpu": 50, "gpu": 60, "ram": 40}, {}, size, None)
+    assert renderer._ring_selection.is_select_window is True
+    assert renderer._ring_selection.active_index in (0, 1, 2)
+
+    # Новое окно данных — «пропуск» (активный пульс гаснет), затем снова «выбрать».
+    renderer(setup, {"cpu": 51, "gpu": 61, "ram": 41}, {}, size, None)
+    assert renderer._ring_selection.is_select_window is False
+    renderer(setup, {"cpu": 52, "gpu": 62, "ram": 42}, {}, size, None)
+    assert renderer._ring_selection.is_select_window is True
