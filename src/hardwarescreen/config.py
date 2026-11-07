@@ -23,6 +23,9 @@ class Config:
     active_fps: float = 15.0
     sensor_poll_s: float = 1.0
     jpeg_quality: int = 80
+    # Плотность «dp → px» для дизайн-размеров (Android-стиль): сколько физических
+    # пикселей панели приходится на одну dp.  По умолчанию 1.0 — dp == px.
+    density: float = 1.0
     theme: str = "dark"
     sensors: list[str] = field(default_factory=lambda: ["cpu", "ram", "temp", "disk", "net"])
     background: dict | None = None  # {"type": "solid"|"image", "value": ...}

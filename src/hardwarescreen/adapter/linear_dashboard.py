@@ -47,6 +47,7 @@ from .selection_strategy import (
     SelectSingleIndicator,
     count_selected,
 )
+from .ui_density import dp
 
 _LF = None
 
@@ -124,6 +125,7 @@ class LinearDashboardRenderer:
         bar_corner_fraction: float | None = None,
         fill_corner_fraction: float | None = None,
         value_palette_on: bool = True,
+        density: float = 1.0,
     ) -> None:
         # Константы заданы в конце файла, поэтому дефолт направления разрешаем
         # здесь (в сигнатуре имя константы ещё не объявлено на этапе определения).
@@ -155,6 +157,21 @@ class LinearDashboardRenderer:
         self._selection_transition_s = (
             SELECTION_TRANSITION_S if selection_transition_s is None else selection_transition_s
         )
+        # Дизайн-величины задаются в dp и приводятся к px через плотность (см.
+        # ``ui_density``): шрифт/отступы подписей, «нет данных», запас и радиус
+        # размытия свечения.  Геометрия (бары/зазоры/скругления) уже масштабируется
+        # через мм/доли, поэтому сюда не входит.
+        self._density = density if density > 0 else 1.0
+        self._label_font_px = int(dp(LABEL_FONT_SIZE, self._density))
+        self._label_pad_x_px = int(dp(LABEL_PAD_X, self._density))
+        self._label_pad_y_px = int(dp(LABEL_PAD_Y, self._density))
+        self._no_data_font_px = int(dp(NO_DATA_FONT_SIZE, self._density))
+        self._no_data_text_pad_px = int(dp(NO_DATA_TEXT_PAD, self._density))
+        self._no_data_dash_x_px = int(dp(NO_DATA_DASH_X_SPAN, self._density))
+        self._no_data_dash_y_px = int(dp(NO_DATA_DASH_Y_SPAN, self._density))
+        # Запас области размытия обязан остаться целым (иначе PIL-размер кадра станет дробным).
+        self._glow_margin_px = int(dp(GLOW_MARGIN_PX, self._density))
+        self._glow_blur_radius_px = int(dp(GLOW_BLUR_RADIUS_PX, self._density))
         self._rng = rng if rng is not None else random.Random()
         self._layout = layout if layout is not None else SelectionLayoutManager()
         # Стратегии роста выбранных индикаторов (внутренняя деталь).  ``select`` —
@@ -392,6 +409,8 @@ class LinearDashboardRenderer:
                             bar_corner_fraction=self._bar_corner_fraction,
                             fill_corner_fraction=self._fill_corner_fraction,
                             fill_direction=self._fill_direction,
+                            glow_margin_px=self._glow_margin_px,
+                            glow_blur_radius_px=self._glow_blur_radius_px,
                         )
         if specs:
             self._paint_text_pil(
@@ -403,14 +422,19 @@ class LinearDashboardRenderer:
             from PIL import ImageDraw
 
             d = ImageDraw.Draw(pil)
-            _pil_text(d, "no data", self._size[0] // 2 - NO_DATA_TEXT_PAD,
-                      (self._size[1] - NO_DATA_TEXT_PAD) // 2,
-                      size=NO_DATA_FONT_SIZE, fill=pal["text"])
+            _pil_text(d, "no data", self._size[0] // 2 - int(self._no_data_text_pad_px),
+                      (self._size[1] - int(self._no_data_text_pad_px)) // 2,
+                      size=self._no_data_font_px, fill=pal["text"])
+            center_x = self._size[0] // 2
+            dash_y = (
+                (self._size[1] - int(self._no_data_text_pad_px)) // 2
+                + int(self._no_data_dash_y_px)
+            )
             d.line(
-                [(self._size[0] // 2 - NO_DATA_DASH_X_SPAN,
-                  (self._size[1] - NO_DATA_TEXT_PAD) // 2 + NO_DATA_DASH_Y_SPAN),
-                 (self._size[0] // 2 + NO_DATA_DASH_X_SPAN,
-                  (self._size[1] - NO_DATA_TEXT_PAD) // 2 + NO_DATA_DASH_Y_SPAN)],
+                [
+                    (center_x - int(self._no_data_dash_x_px), dash_y),
+                    (center_x + int(self._no_data_dash_x_px), dash_y),
+                ],
                 fill=pal["muted"], width=2,
             )
         return pil.tobytes()
@@ -461,7 +485,7 @@ class LinearDashboardRenderer:
         focus_values = focus if focus is not None else []
         selection_on = focus is not None
         selection_strength = max(focus_values) if focus_values else 0.0
-        label_font = _pil_font(LABEL_FONT_SIZE)
+        label_font = _pil_font(self._label_font_px)
         for idx, (spec, geo) in enumerate(zip(specs, layout.geometry, strict=True)):
             focus_value = focus_values[idx] if idx < len(focus_values) else 0.0
             brightness = self._selection_dim(focus_value, selection_on, selection_strength)
@@ -478,29 +502,33 @@ class LinearDashboardRenderer:
                 bar_top = int(geo.y)
                 bar_bottom = int(geo.y + geo.height)
                 label_w = d.textlength(spec["label"], font=label_font)
-                d.text((center_x - int(label_w / 2.0), bar_top + LABEL_PAD_Y),
+                d.text((center_x - int(label_w / 2.0), bar_top + self._label_pad_y_px),
                        spec["label"], fill=text_color_rgb, font=label_font)
                 value_w = d.textlength(spec["text"], font=label_font)
                 d.text((center_x - int(value_w / 2.0),
-                        bar_bottom - LABEL_PAD_Y - LABEL_FONT_SIZE),
+                        bar_bottom - self._label_pad_y_px - self._label_font_px),
                        spec["text"], fill=text_color_rgb, font=label_font)
                 continue
             center_y = int(geo.center_y)
             bar_left = int(geo.x)
             bar_length = int(geo.width)
-            _pil_text(d, spec["label"], bar_left + LABEL_PAD_X, center_y - LABEL_PAD_Y,
-                      size=LABEL_FONT_SIZE, fill=text_color_rgb)
+            _pil_text(d, spec["label"], bar_left + self._label_pad_x_px,
+                      center_y - self._label_pad_y_px,
+                      size=self._label_font_px, fill=text_color_rgb)
             value_w = d.textlength(spec["text"], font=label_font)
             _pil_text(d, spec["text"],
-                      bar_left + bar_length - LABEL_PAD_X - int(value_w),
-                      center_y - LABEL_PAD_Y, size=LABEL_FONT_SIZE, fill=text_color_rgb)
+                      bar_left + bar_length - self._label_pad_x_px - int(value_w),
+                      center_y - self._label_pad_y_px,
+                      size=self._label_font_px, fill=text_color_rgb)
 
     @staticmethod
     def _paint_glow_pil(img, bar_rect, fill_rect, glow_color,
                         strength: float, *, vertical: bool = False,
                         bar_corner_fraction: float | None = None,
                         fill_corner_fraction: float | None = None,
-                        fill_direction: str | None = None):
+                        fill_direction: str | None = None,
+                        glow_margin_px: int | None = None,
+                        glow_blur_radius_px: int | None = None):
         """Возвращает ``img`` с плавной цветной тенью ТОЛЬКО наружу заполненной части.
 
         Силуэт заливки строится той же формой, которой рисуется сама заливка в
@@ -512,7 +540,9 @@ class LinearDashboardRenderer:
         из размытой маски вырезается собственный footprint заливки, чтобы свет
         расходился только вне залитой части и не тонировал её.  ``strength`` (0..1)
         = уровень фокуса; ``glow_color`` — цвет свечения (цвет состояния бара при
-        включённой палитре либо зелёный фокус-цвет).
+        включённой палитре либо зелёный фокус-цвет).  ``glow_margin_px``/``glow_blur_radius_px``
+        — запас области размытия и радиус блюра в px (приходят из density-разрешённых
+        величин рендерера).
 
         ``vertical=True`` — капсула относится к вертикальному столбцу, у которого
         скругление по ширине, а не по высоте (как у горизонтального бара).
@@ -523,6 +553,12 @@ class LinearDashboardRenderer:
         полагался на изменение изображения на месте и в Pillow 13 этого не
         гарантирует, поэтому смешение здесь — статическое и возвращает новый кадр.
         """
+        # Константы заданы в конце файла, поэтому дефолт разрешаем здесь (в сигнатуре
+        # их имя ещё не объявлено на этапе определения класса).
+        if glow_margin_px is None:
+            glow_margin_px = GLOW_MARGIN_PX
+        if glow_blur_radius_px is None:
+            glow_blur_radius_px = GLOW_BLUR_RADIUS_PX
         from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
         if fill_direction is None:
@@ -542,10 +578,10 @@ class LinearDashboardRenderer:
         if fill_width <= 0 or fill_height <= 0:
             return img
         # Ограничиваем область тени вокруг залитой части, чтобы не размывать весь кадр.
-        box_left = max(0, fill_left - GLOW_MARGIN_PX)
-        box_top = max(0, fill_top - GLOW_MARGIN_PX)
-        box_right = min(img.width, fill_left + fill_width + GLOW_MARGIN_PX)
-        box_bottom = min(img.height, fill_top + fill_height + GLOW_MARGIN_PX)
+        box_left = max(0, fill_left - glow_margin_px)
+        box_top = max(0, fill_top - glow_margin_px)
+        box_right = min(img.width, fill_left + fill_width + glow_margin_px)
+        box_bottom = min(img.height, fill_top + fill_height + glow_margin_px)
         box_width = box_right - box_left
         box_height = box_bottom - box_top
         if box_width <= 0 or box_height <= 0:
@@ -568,7 +604,7 @@ class LinearDashboardRenderer:
             *_fill_corner_radii(fill_direction, 0.0, fill_radius),
         )
         silhouette = ImageChops.multiply(silhouette, region_mask)
-        blurred = silhouette.filter(ImageFilter.GaussianBlur(GLOW_BLUR_RADIUS_PX))
+        blurred = silhouette.filter(ImageFilter.GaussianBlur(glow_blur_radius_px))
         # Внутри footprint заливки тень равна нулю — свет идёт только наружу.
         outside_mask = silhouette.point(lambda v: LUMINANCE_MAX - v)
         outward_alpha = Image.composite(

@@ -424,4 +424,24 @@ def test_multiple_strategy_horizontal_adjacent_trims_along_height():
     assert gap >= 20.0
 
 
+def test_renderer_density_scales_design_sizes():
+    # density=2.0 → дизайн-константы шрифта/отступов/свечения/«нет данных» удваиваются;
+    # при density=1.0 они остаются теми же px (обратная совместимость).
+    renderer = LinearDashboardRenderer((1920, 440), density=2.0)
+    assert renderer._label_font_px == 52
+    assert renderer._label_pad_x_px == 28
+    assert renderer._label_pad_y_px == 32
+    assert renderer._no_data_font_px == 60
+    assert renderer._glow_margin_px == 96
+    assert renderer._glow_blur_radius_px == 32
+
+    default = LinearDashboardRenderer((1920, 440))
+    assert default._label_font_px == 26
+    assert default._label_pad_x_px == 14
+    assert default._label_pad_y_px == 16
+    assert default._no_data_font_px == 30
+    assert default._glow_margin_px == 48
+    assert default._glow_blur_radius_px == 16
+
+
 

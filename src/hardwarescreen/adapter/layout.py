@@ -29,6 +29,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .ui_density import dp
+
 
 @dataclass(frozen=True)
 class BarGeometry:
@@ -75,14 +77,19 @@ class BaseLayoutManager:
         selection_scale: float = 1.22,
         min_slot: float = 8.0,
         stack_align: str = "center",
+        density: float = 1.0,
     ) -> None:
+        # Дизайн-величины (отступ от края, клампы зазора, min толщина) задаются в dp
+        # и сразу приводятся к px через плотность (см. ``ui_density``).  ``padding_x``
+        # остаётся авторингом: его может переопределять физический мм-размер
+        # (``HARDWARESCREEN_PADDING_MM``), который уже переведён в px на входе.
         self._padding_x = padding_x
-        self._edge_margin = edge_margin
-        self._gap_min = gap_min
-        self._gap_max = gap_max
+        self._edge_margin = dp(edge_margin, density)
+        self._gap_min = dp(gap_min, density)
+        self._gap_max = dp(gap_max, density)
         self._gap_ratio = gap_ratio
         self._selection_scale = selection_scale
-        self._min_slot = min_slot
+        self._min_slot = dp(min_slot, density)
         # Выравнивание стека вдоль оси раскладки: "left" (для вертикальных столбцов —
         # к левому краю, для горизонтальных — к верхнему), "right"/"center".  Полезно,
         # когда индикатор занимает только часть панели (например, слева).

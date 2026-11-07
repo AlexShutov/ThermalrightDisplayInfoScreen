@@ -24,6 +24,7 @@ from hardwarescreen.adapter.dashboard import _palette
 from hardwarescreen.adapter.driver import AdapterDriver
 from hardwarescreen.adapter.poller import BridgePoller
 from hardwarescreen.adapter.source import DashboardSource
+from hardwarescreen.adapter.ui_density import resolve_density
 from manager.store import AtomicStateFile
 
 log = logging.getLogger("hardwarescreen.dashboard")
@@ -466,10 +467,13 @@ class DashboardModule(BaseModule, key=_KEY):
             px_per_mm = _resolve_px_per_mm(
                 size, _optional_float_env("HARDWARESCREEN_PX_PER_MM")
             )
+            density = resolve_density(
+                os.environ.get("HARDWARESCREEN_DENSITY"), 1.0
+            )
             renderer_kwargs = {
                 "fps": fps,
                 "fill_direction": fill_direction,
-                "layout": self._make_layout(px_per_mm),
+                "layout": self._make_layout(px_per_mm, density),
                 "bar_corner_fraction": _optional_float_env(
                     "HARDWARESCREEN_BAR_CORNER_FRACTION"
                 ),
@@ -477,6 +481,7 @@ class DashboardModule(BaseModule, key=_KEY):
                     "HARDWARESCREEN_FILL_CORNER_FRACTION"
                 ),
                 "value_palette_on": _color_palette_enabled(),
+                "density": density,
             }
             if _composite_enabled():
                 region = _composite_regions(size, px_per_mm)
@@ -505,7 +510,7 @@ class DashboardModule(BaseModule, key=_KEY):
         return None
 
     @staticmethod
-    def _make_layout(px_per_mm: float):
+    def _make_layout(px_per_mm: float, density: float = 1.0):
         """Velocity layout manager from the ``layout`` env / explicit geometry.
 
         ``HARDWARESCREEN_LAYOUT`` selects the way the columns are laid out:
@@ -516,6 +521,8 @@ class DashboardModule(BaseModule, key=_KEY):
         mm env (``HARDWARESCREEN_BAR_SIZE_MM`` / ``HARDWARESCREEN_GAP_MM``) scaled by
         ``px_per_mm`` — так размеры можно задавать в миллиметрах независимо от
         разрешения панели.  Если заданы mm-размеры, раскладка считается явной.
+        ``density`` — px-на-dp для зафиксированных дизайн-величин раскладки
+        (отступ от края, клампы зазора, min толщина).
         """
         from hardwarescreen.adapter.layout import (
             AutoGapLayoutManager,
@@ -540,7 +547,7 @@ class DashboardModule(BaseModule, key=_KEY):
             if gap_mm is not None
             else _optional_float_env("HARDWARESCREEN_GAP")
         )
-        layout_kwargs = {"stack_align": stack_align}
+        layout_kwargs = {"stack_align": stack_align, "density": density}
         if padding_mm is not None:
             layout_kwargs["padding_x"] = round(padding_mm * px_per_mm)
         if bar_size_mm is not None or gap_mm is not None:

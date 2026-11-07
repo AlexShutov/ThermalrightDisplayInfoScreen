@@ -225,3 +225,22 @@ def test_explicit_gap_vertical_left_aligns_to_padding():
     lm_h = ExplicitGapLayoutManager(bar_size=60.0, gap=30.0, stack_align="left")
     r_h = lm_h.measure(W, H, 3)
     assert abs(r_h[0].y - EDGE) < 1e-6
+
+
+def test_density_scales_fixed_design_sizes():
+    # density=2.0 → зафиксированные дизайн-величины раскладки (отступ по краю, клампы
+    # зазора, min толщина) удваиваются; ``padding_x`` остаётся авторингом (мм-оверрайд).
+    lm = StaticLayoutManager(density=2.0)
+    assert lm.edge_margin == 28.0
+    assert lm._gap_min == 16.0
+    assert lm._gap_max == 56.0
+    assert lm._min_slot == 16.0
+    assert lm.padding_x == 48.0  # не масштабируется через dp
+
+
+def test_density_default_keeps_px_unchanged():
+    lm = StaticLayoutManager()
+    assert lm.edge_margin == EDGE
+    assert lm._gap_min == 8.0
+    assert lm._gap_max == 28.0
+    assert lm._min_slot == 8.0
