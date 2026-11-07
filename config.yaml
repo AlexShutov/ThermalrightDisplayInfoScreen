@@ -8,6 +8,12 @@ active_fps: 15.0
 sensor_poll_s: 1.0
 jpeg_quality: 80
 density: 1.0
+font_family: Spacetron
+label_font_family: null
+text_bold: true
+label_text_bold: true
+label_text_bold_scale: 0.6
+text_letter_spacing: 0.12
 theme: dark
 sensors: [cpu, ram, temp, disk, net]
 background: null

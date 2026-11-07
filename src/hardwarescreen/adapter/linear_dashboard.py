@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import os
 import random
+import threading
 import time
+from typing import TYPE_CHECKING
 
 from PIL import Image
 
@@ -49,7 +51,29 @@ from .selection_strategy import (
 )
 from .ui_density import dp
 
+if TYPE_CHECKING:  # типы сабмодуля нужны только для проверки типов (не на рантайме)
+    from common.font import FontResolver, FontSpec
+    from common.font_size import FontSizeCalculator
+
 _LF = None
+
+
+def _coerce_rgb(color: object) -> tuple[int, int, int]:
+    """Приводит переопределённый цвет колонки к ``(r, g, b)``.
+
+    Принимает hex-строку ``'#rrggbb'`` (как в палитре) либо тройку ``(r, g, b)``.
+    Невалидное значение откатывается к нейтральному (как ``hex_to_rgb``).
+    """
+    if isinstance(color, str):
+        return hex_to_rgb(color)
+    if isinstance(color, (tuple, list)):
+        try:
+            channels = [int(channel) for channel in color[:3]]
+        except (TypeError, ValueError):
+            return (80, 80, 90)
+        if len(channels) == 3:
+            return (channels[0], channels[1], channels[2])
+    return (80, 80, 90)
 
 
 def _fallback_ease_out_cubic(t: float) -> float:
@@ -90,26 +114,33 @@ def _ensure_selection_module():
     return _SELECTION
 
 
-def _pil_font(size: int):
-    try:
-        from PIL import ImageFont
-
-        return ImageFont.truetype("DejaVuSans.ttf", size)
-    except Exception:
-        return None
+# ``common.font`` тоже headless на импорте (только dataclass/pathlib); PIL тянут
+# лениво внутри ``FontResolver.resolve``.  Импортируем так же лениво, как selection.
+_FONT_MODULE = None
 
 
-def _pil_text(d, s: str, x: int, y: int, size=None,
-              fill: tuple[int, int, int] | None = None) -> None:
-    if size is None:
-        size = LABEL_FONT_SIZE
-    if fill is None:
-        fill = LABEL_DEFAULT_TEXT_COLOR
-    d.text((x, y), s, fill=fill, font=_pil_font(size))
+def _ensure_font_module():
+    """Lazily import the shared ``common.font`` module (no submodule at import)."""
+    global _FONT_MODULE
+    if _FONT_MODULE is None:
+        import common.font as font  # noqa: PLC0415
+
+        _FONT_MODULE = font
+    return _FONT_MODULE
 
 
 class LinearDashboardRenderer:
     """Stateful offscreen renderer: eases progress (value) and pulses a random selection."""
+
+    # Лениво создаваемые шрифтовые инструменты (см. ``_ensure_font_tools``): до
+    # первого вызова они ``None``, после — реальные объекты.  Аннотации — строки
+    # (``from __future__ import annotations``), нужны только mypy, не тянут ``common``
+    # на рантайме.
+    _font_resolver: FontResolver | None = None
+    _font_size_calculator: FontSizeCalculator | None = None
+    _font_spec_cls: type[FontSpec] | None = None
+    _font_family: str | None = None
+    _label_font_family: str | None = None
 
     def __init__(
         self,
@@ -126,6 +157,12 @@ class LinearDashboardRenderer:
         fill_corner_fraction: float | None = None,
         value_palette_on: bool = True,
         density: float = 1.0,
+        font_family: str | None = None,
+        label_font_family: str | None = None,
+        text_bold: bool = True,
+        text_letter_spacing: float | None = None,
+        label_text_bold: bool = False,
+        label_text_bold_scale: float | None = None,
     ) -> None:
         # Константы заданы в конце файла, поэтому дефолт направления разрешаем
         # здесь (в сигнатуре имя константы ещё не объявлено на этапе определения).
@@ -172,6 +209,37 @@ class LinearDashboardRenderer:
         # Запас области размытия обязан остаться целым (иначе PIL-размер кадра станет дробным).
         self._glow_margin_px = int(dp(GLOW_MARGIN_PX, self._density))
         self._glow_blur_radius_px = int(dp(GLOW_BLUR_RADIUS_PX, self._density))
+        # Шрифт подписей: семейство выбирается снаружи (общепринятый формат —
+        # имя семейства), а фактический кегль подбирается ``FontSizeCalculator``
+        # под габариты зоны подписи/значения.  Резолвер и калькулятор создаём
+        # лениво (``common`` — сабмодуль, не должен требоваться на импорте).
+        self._font_family = font_family
+        self._font_resolver = None
+        self._font_size_calculator = None
+        # Два семейства: значения (проценты) и верхние подписи (буквы) могут
+        # рисоваться разными шрифтами.  ``None`` → как у значений (текущее поведение).
+        self._label_font_family = label_font_family
+        # Жирный текст (нет Bold-актива у стилевого шрифта) — имитируем утолщением
+        # глифа (stroke), чтобы надписи читались крупно и контрастно.
+        self._text_bold = text_bold
+        # Межсимвольный интервал (трекинг) как доля кегля: стилевой шрифт плотный,
+        # без него символы слипаются.  ``None`` → константа по умолчанию.
+        self._text_letter_spacing = (
+            text_letter_spacing
+            if text_letter_spacing is not None
+            else TEXT_LETTER_SPACING_FRACTION
+        )
+        # Киберпанк-шрифт подписей широкий и наклонный: грубая утолщающая обводка
+        # Жирность подписей: для Spacetron (тот же шрифт, что у значений) обводка
+        # даёт тот же жирный вид, что у значений.  ``label_text_bold_scale`` — доля
+        # жирности значений, чтобы подписи были чуть легче значений (кегль подписей
+        # больше, поэтому без масштаба они выходят жирнее значений).
+        self._label_text_bold = label_text_bold
+        self._label_text_bold_scale = (
+            label_text_bold_scale
+            if label_text_bold_scale is not None
+            else LABEL_TEXT_BOLD_SCALE
+        )
         self._rng = rng if rng is not None else random.Random()
         self._layout = layout if layout is not None else SelectionLayoutManager()
         # Стратегии роста выбранных индикаторов (внутренняя деталь).  ``select`` —
@@ -194,6 +262,19 @@ class LinearDashboardRenderer:
             transition_s=self._selection_transition_s, ease=self._ease, rng=self._rng
         )
         self._last_content_signature: object | None = None
+        # Внешние переопределения внешнего вида колонок (обращение по id/индексу):
+        # цвет заливки, цвет текста (подписи+значения) и сам текст/подпись.  Ключ —
+        # уникальный ``id`` колонки, значения-``None`` отсутствуют, чтобы команды
+        # «сбросить» могли убрать переопределение целиком.
+        self._column_color: dict[str, tuple[int, int, int]] = {}
+        self._column_text_color: dict[str, tuple[int, int, int]] = {}
+        self._column_text: dict[str, str] = {}
+        self._column_label: dict[str, str] = {}
+        # Внешний API рассчитан на вызов из менеджера (его async-поток), тогда как
+        # ``render`` выполняется в потоке отображения trcc.  Лёгкий лок защищает
+        # переопределения и порядок ``_ids`` от гонки между ними.  ``RLock`` — потому
+        # что сеттеры вызывают ``_resolve_column_id`` (тоже берущую лок) внутри блока.
+        self._overrides_lock = threading.RLock()
 
     @property
     def _sel_index(self) -> int | None:
@@ -216,7 +297,87 @@ class LinearDashboardRenderer:
     ) -> bytes:
         return self.render(setup, values, palette, size, background, focus=focus)
 
+    def _resolve_column_id(self, target) -> str:
+        """Сопоставляет цель (уникальный id или индекс) с id колонки.
+
+        ``str``-id принимается сразу: переопределение применится, как только колонка с
+        таким id появится в ``setup`` (на следующем рендере).  ``int``-индекс требует
+        хотя бы одного рендера — иначе порядок колонок ещё неизвестен.
+        """
+        if isinstance(target, str):
+            return target
+        index = int(target)
+        with self._overrides_lock:
+            ids = list(self._ids)
+        if not ids:
+            raise IndexError("column index requires a prior render (ids unknown); use an id")
+        if 0 <= index < len(ids):
+            return ids[index]
+        raise IndexError(f"column index {index} out of range (have {len(ids)} columns)")
+
+    def set_column(self, target, *, color=None, text_color=None,
+                   text=None, label=None) -> None:
+        """Перегруженный метод: задать цвет/текст колонки по id или индексу.
+
+        ``target`` — уникальный ``str`` id колонки либо её ``int`` индекс (после первого
+        рендера).  Любое из переопределений опционально: меняется только переданное,
+        остальное остаётся прежним.  Раздельные методы (``set_color``/``set_text_color``/
+        ``set_text``/``set_label``) позволяют менять один аспект; этот — все сразу.
+        """
+        column_id = self._resolve_column_id(target)
+        with self._overrides_lock:
+            if color is not None:
+                self._column_color[column_id] = _coerce_rgb(color)
+            if text_color is not None:
+                self._column_text_color[column_id] = _coerce_rgb(text_color)
+            if text is not None:
+                self._column_text[column_id] = str(text)
+            if label is not None:
+                self._column_label[column_id] = str(label)
+
+    def set_color(self, target, color) -> None:
+        """Отдельный метод: задать цвет заливки колонки (по id или индексу)."""
+        with self._overrides_lock:
+            self._column_color[self._resolve_column_id(target)] = _coerce_rgb(color)
+
+    def set_text_color(self, target, color) -> None:
+        """Отдельный метод: задать цвет текста (подписи и значения) колонки."""
+        with self._overrides_lock:
+            self._column_text_color[self._resolve_column_id(target)] = _coerce_rgb(color)
+
+    def set_text(self, target, text) -> None:
+        """Переопределить отображаемое значение колонки (по id или индексу)."""
+        with self._overrides_lock:
+            self._column_text[self._resolve_column_id(target)] = str(text)
+
+    def set_label(self, target, label) -> None:
+        """Переопределить подпись колонки (по id или индексу)."""
+        with self._overrides_lock:
+            self._column_label[self._resolve_column_id(target)] = str(label)
+
+    def clear_column(self, target) -> None:
+        """Убрать все переопределения внешнего вида одной колонки (по id или индексу)."""
+        column_id = self._resolve_column_id(target)
+        with self._overrides_lock:
+            for overrides in (self._column_color, self._column_text_color,
+                              self._column_text, self._column_label):
+                overrides.pop(column_id, None)
+
+    def clear_columns(self) -> None:
+        """Убрать все переопределения цветов/текстов колонок."""
+        with self._overrides_lock:
+            for overrides in (self._column_color, self._column_text_color,
+                              self._column_text, self._column_label):
+                overrides.clear()
+
     def _specs(self, setup: list[dict], values: dict, palette: dict) -> list[dict]:
+        # Снимок переопределений под локом: рендер читает их в потоке отображения,
+        # а сеттеры менеджера меняют параллельно.  Копия исключает гонку и сдвиг
+        # ключей посреди сборки спецификаций.
+        with self._overrides_lock:
+            column_color = dict(self._column_color)
+            column_label = dict(self._column_label)
+            column_text = dict(self._column_text)
         specs: list[dict] = []
         for g in setup:
             gid = g.get("id", "")
@@ -239,11 +400,13 @@ class LinearDashboardRenderer:
                 color = value_color(pct / PERCENT_SCALE)
             else:
                 color = palette["accent"]
+            # Внешнее переопределение по id имеет приоритет над автоматическим цветом.
+            color = column_color.get(gid, color)
             specs.append(
                 {
                     "id": gid,
-                    "label": g.get("label", gid),
-                    "text": text,
+                    "label": column_label.get(gid, g.get("label", gid)),
+                    "text": column_text.get(gid, text),
                     "pct": pct,
                     "color": color,
                 }
@@ -261,12 +424,17 @@ class LinearDashboardRenderer:
         return palette["muted"] if self._value_palette_on else None
 
     def _glow_color(self, progress: float,
-                    focus_color: tuple[int, int, int]) -> tuple[int, int, int]:
+                    focus_color: tuple[int, int, int],
+                    override_color: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
         """Цвет свечения выделенного бара.
 
-        При включённой цветовой палитре — цвет ТЕКУЩЕГО состояния бара
-        (``value_color(progress)``); без палитры — прежний зелёный фокус-цвет.
+        Внешнее переопределение цвета колонки (``override_color``) согласует свечение
+        с заливкой вручную окрашенного бара.  Иначе при включённой цветовой палитре —
+        цвет ТЕКУЩЕГО состояния бара (``value_color(progress)``); без палитры — прежний
+        зелёный фокус-цвет.
         """
+        if override_color is not None:
+            return override_color
         if self._value_palette_on:
             return value_color(progress)
         return focus_color
@@ -293,12 +461,14 @@ class LinearDashboardRenderer:
         pal = _palette(palette)
         specs = self._specs(setup or [], values or {}, pal)
         ids = [s["id"] for s in specs]
-        if ids != self._ids:
-            self._ids = ids
-            self._progress = [0.0] * len(specs)
-            self._progress_from = [0.0] * len(specs)
-            self._progress_target = [0.0] * len(specs)
-            self._progress_start = [0.0] * len(specs)
+        with self._overrides_lock:
+            if ids != self._ids:
+                self._ids = ids
+                self._progress = [0.0] * len(specs)
+                self._progress_from = [0.0] * len(specs)
+                self._progress_target = [0.0] * len(specs)
+                self._progress_start = [0.0] * len(specs)
+            bar_overrides = dict(self._column_color)
 
         n = len(specs)
         # Выбор меняется ВМЕСТЕ со сменой данных: каждое новое окно (сигнатура
@@ -372,10 +542,14 @@ class LinearDashboardRenderer:
             # Цвет заливки бара — ТЕКУЩЕЕ (анимированное) значение при включённой
             # палитре, чтобы заливка и свечение выделенного бара не расходились на
             # 0.3 с анимации; без палитры — общий акцент (прежнее поведение).
+            # Внешнее переопределение по id приоритетнее анимации (статичный цвет).
+            override_color = bar_overrides.get(specs[i]["id"])
             bar_color = (
-                value_color(progress[i])
-                if self._value_palette_on
-                else specs[i]["color"]
+                override_color
+                if override_color is not None
+                else (value_color(progress[i])
+                      if self._value_palette_on
+                      else specs[i]["color"])
             )
             self._paint_bar(p, rects[i], progress[i], bar_color, dim,
                             self._fill_direction,
@@ -402,7 +576,10 @@ class LinearDashboardRenderer:
                         fill_rect = self._fill_rect(
                             rects[i], fill_fraction, self._fill_direction,
                         )
-                        glow_color = self._glow_color(progress[i], focus_color)
+                        glow_color = self._glow_color(
+                            progress[i], focus_color,
+                            bar_overrides.get(specs[i]["id"]),
+                        )
                         pil = self._paint_glow_pil(
                             pil, rects[i], fill_rect, glow_color, f,
                             vertical=self._bar_vertical,
@@ -413,18 +590,32 @@ class LinearDashboardRenderer:
                             glow_blur_radius_px=self._glow_blur_radius_px,
                         )
         if specs:
-            self._paint_text_pil(
-                pil, specs, layout, pal["text"],
-                focus if selection_on else None, pal["background"],
-                vertical=self._bar_vertical,
-            )
+            self._paint_text_pil(pil, specs, layout, vertical=self._bar_vertical)
         else:
             from PIL import ImageDraw
 
+            font_resolver = self._ensure_font_tools()
+            calc = self._font_size_calculator
+            spec_cls = self._font_spec_cls
+            assert calc is not None and spec_cls is not None and self._font_family is not None
+            no_data_size = calc.fit(
+                NO_DATA_TEXT, self._font_family,
+                self._size[0] - 2 * self._no_data_text_pad_px,
+                self._size[1] * NO_DATA_HEIGHT_FRACTION,
+                min_size=calc.min_size,
+            )
+            no_data_font = font_resolver.resolve(
+                spec_cls(self._font_family, no_data_size)
+            )
+            no_data_stroke = self._text_stroke(no_data_size)
+            no_data_spacing = self._letter_spacing(no_data_size)
             d = ImageDraw.Draw(pil)
-            _pil_text(d, "no data", self._size[0] // 2 - int(self._no_data_text_pad_px),
-                      (self._size[1] - int(self._no_data_text_pad_px)) // 2,
-                      size=self._no_data_font_px, fill=pal["text"])
+            if no_data_font is not None:
+                no_data_x = self._size[0] // 2 - int(self._no_data_text_pad_px)
+                no_data_y = (self._size[1] - int(self._no_data_text_pad_px)) // 2
+                self._draw_tracked(d, NO_DATA_TEXT, no_data_x, no_data_y,
+                                   no_data_font, LABEL_TEXT_COLOR_WHITE,
+                                   no_data_spacing, no_data_stroke)
             center_x = self._size[0] // 2
             dash_y = (
                 (self._size[1] - int(self._no_data_text_pad_px)) // 2
@@ -473,53 +664,173 @@ class LinearDashboardRenderer:
             IMAGE_MODE_RGBA, (w, h), raw, PIL_RAW_MODE, IMAGE_MODE_RGBA, stride, 1
         )
 
+    def _ensure_font_tools(self) -> FontResolver:
+        """Лениво создаёт резолвер шрифта, калькулятор кегля и семейство (и кэширует)."""
+        if self._font_resolver is None:
+            font_module = _ensure_font_module()
+            from common.font_size import FontSizeCalculator  # noqa: PLC0415
+
+            self._font_resolver = font_module.FontResolver()
+            self._font_size_calculator = FontSizeCalculator(
+                self._font_resolver,
+                letter_spacing_fraction=self._text_letter_spacing,
+            )
+            self._font_family = self._font_family or font_module.DEFAULT_FONT_FAMILY
+            self._label_font_family = self._label_font_family or self._font_family
+            self._font_spec_cls = font_module.FontSpec
+        assert (
+            self._font_resolver is not None
+            and self._font_size_calculator is not None
+            and self._font_spec_cls is not None
+        )
+        return self._font_resolver
+
+    def _column_text_bounds(self, geometry, vertical: bool) -> tuple[float, float]:
+        """(ширина, высота) зоны текста: ширина — столбца, высота — доля его высоты.
+
+        Для вертикальных столбцов ширина текста ограничена шириной столбца (надпись
+        центрируется и не должна пересекать соседей); высота — долей высоты столбца
+        (верх/низ).  Ограничение по высоте нужно, чтобы длинная надпись не занимала
+        весь столбец; при равной раскладке зоны совпадают, берём минимум по всем.
+        """
+        widths = [int(g.width) for g in geometry]
+        heights = [int(g.height) for g in geometry]
+        if not widths or not heights:
+            return 0.0, 0.0
+        area_width: float = float(min(widths))
+        area_height: float = float(min(heights))
+        if vertical:
+            area_height *= LABEL_AREA_HEIGHT_FRACTION
+        else:
+            area_width *= LABEL_AREA_WIDTH_FRACTION
+        if self._text_bold:
+            # Жирный (stroke) добавляет пару px с каждой стороны глифа — резервируем
+            # запас, чтобы текст не вылезал за границу столбца/бара.
+            area_width = max(0.0, area_width - TEXT_STROKE_MARGIN_PX)
+            area_height = max(0.0, area_height - TEXT_STROKE_MARGIN_PX)
+        return area_width, area_height
+
+    def _shared_font_size(self, texts: list[str], family: str, geometry,
+                          vertical: bool) -> int:
+        """Общий кегль для набора ``texts``: минимум по ``fit`` каждого.
+
+        Проход по всем надписям делает сам виджет (здесь, на стороне индикатора):
+        самая длинная надпись задаёт наибольшее общее ограничение, чтобы «для всех
+        надписей сверху» был один максимальный читаемый кегль.
+        """
+        area_width, area_height = self._column_text_bounds(geometry, vertical)
+        if area_width <= 0 or not texts:
+            return self._label_font_px
+        calc = self._font_size_calculator
+        if calc is None:
+            return self._label_font_px
+        sizes = [
+            calc.fit(
+                text, family, area_width, area_height,
+                min_size=calc.min_size,
+            )
+            for text in texts
+        ]
+        return min(sizes) if sizes else self._label_font_px
+
+    def _text_stroke(self, size: int, bold: bool | None = None,
+                     scale: float = 1.0) -> int:
+        """Ширина утолщающей обводки глифа (имитация жирного) для кегля ``size``.
+
+        ``bold`` переопределяет глобальный ``text_bold`` (для подписей, у которых
+        жирность задаётся отдельным ``label_text_bold``).  ``scale`` — доля от полной
+        жирности (например подписи чуть легче значений).
+        """
+        bold = self._text_bold if bold is None else bold
+        if not bold:
+            return 0
+        return max(1, round(size / TEXT_STROKE_WIDTH_DIVISOR * scale))
+
+    def _letter_spacing(self, size: int) -> int:
+        """Межсимвольный интервал (px) для кегля ``size``."""
+        return int(round(size * self._text_letter_spacing))
+
+    @staticmethod
+    def _tracked_width(d, text: str, font, spacing: int) -> float:
+        """Ширина ``text`` при посимвольной отрисовке с интервалом ``spacing`` (px)."""
+        if spacing <= 0 or len(text) <= 1:
+            return float(d.textlength(text, font=font))
+        per_char = sum(d.textlength(ch, font=font) for ch in text)
+        return float(per_char + spacing * (len(text) - 1))
+
+    @staticmethod
+    def _draw_tracked(d, text: str, x: float, y: float, font, fill,
+                      spacing: int, stroke_width: int) -> None:
+        """Рисует ``text`` посимвольно, вставляя ``spacing`` между глифами."""
+        if spacing <= 0 or len(text) <= 1:
+            d.text((x, y), text, fill=fill, font=font,
+                   stroke_width=stroke_width, stroke_fill=fill)
+            return
+        caret = x
+        for ch in text:
+            d.text((caret, y), ch, fill=fill, font=font,
+                   stroke_width=stroke_width, stroke_fill=fill)
+            caret += d.textlength(ch, font=font) + spacing
+
     def _paint_text_pil(self, img: Image.Image, specs: list[dict],
-                        layout, text_color: tuple[int, int, int],
-                        focus: list[float] | None = None,
-                        bg: tuple[int, int, int] = (0, 0, 0),
-                        *,
-                        vertical: bool = False) -> None:
+                        layout, *, vertical: bool = False) -> None:
         from PIL import ImageDraw
 
+        font_resolver = self._ensure_font_tools()
+        spec_cls = self._font_spec_cls
+        family = self._font_family
+        label_family = self._label_font_family
+        assert spec_cls is not None and family is not None and label_family is not None
         d = ImageDraw.Draw(img)
-        focus_values = focus if focus is not None else []
-        selection_on = focus is not None
-        selection_strength = max(focus_values) if focus_values else 0.0
-        label_font = _pil_font(self._label_font_px)
-        for idx, (spec, geo) in enumerate(zip(specs, layout.geometry, strict=True)):
-            focus_value = focus_values[idx] if idx < len(focus_values) else 0.0
-            brightness = self._selection_dim(focus_value, selection_on, selection_strength)
-            # Приглушаем подпись к фону, чтобы она гасла вместе с баром.
-            text_color_rgb = (
-                int(round(text_color[0] * brightness + bg[0] * (1.0 - brightness))),
-                int(round(text_color[1] * brightness + bg[1] * (1.0 - brightness))),
-                int(round(text_color[2] * brightness + bg[2] * (1.0 - brightness))),
-            )
+        if not specs:
+            return
+        labels = [spec["label"] for spec in specs if spec.get("label")]
+        values = [spec["text"] for spec in specs if spec.get("text")] + [PERCENT_MAX_TEXT]
+        label_size = self._shared_font_size(labels, label_family, layout.geometry, vertical)
+        value_size = self._shared_font_size(values, family, layout.geometry, vertical)
+        label_font = font_resolver.resolve(spec_cls(label_family, label_size))
+        value_font = font_resolver.resolve(spec_cls(family, value_size))
+        with self._overrides_lock:
+            text_color_by_id = dict(self._column_text_color)
+        label_stroke = self._text_stroke(label_size, self._label_text_bold,
+                                     self._label_text_bold_scale)
+        value_stroke = self._text_stroke(value_size)
+        label_spacing = self._letter_spacing(label_size)
+        value_spacing = self._letter_spacing(value_size)
+        for spec, geo in zip(specs, layout.geometry, strict=True):
+            # Внешнее переопределение цвета текста по id (по умолчанию белый).
+            text_color = text_color_by_id.get(spec.get("id", ""), LABEL_TEXT_COLOR_WHITE)
             if vertical:
                 # Подпись — по центру X столбца: метка у верхнего края, значение у
                 # нижнего, чтобы стек заливки (снизу вверх/сверху вниз) не перекрыл текст.
                 center_x = int(geo.x + geo.width / 2.0)
                 bar_top = int(geo.y)
                 bar_bottom = int(geo.y + geo.height)
-                label_w = d.textlength(spec["label"], font=label_font)
-                d.text((center_x - int(label_w / 2.0), bar_top + self._label_pad_y_px),
-                       spec["label"], fill=text_color_rgb, font=label_font)
-                value_w = d.textlength(spec["text"], font=label_font)
-                d.text((center_x - int(value_w / 2.0),
-                        bar_bottom - self._label_pad_y_px - self._label_font_px),
-                       spec["text"], fill=text_color_rgb, font=label_font)
+                if spec.get("label") and label_font is not None:
+                    label_w = self._tracked_width(d, spec["label"], label_font, label_spacing)
+                    self._draw_tracked(d, spec["label"],
+                                       center_x - label_w / 2.0, bar_top + self._label_pad_y_px,
+                                       label_font, text_color, label_spacing, label_stroke)
+                if spec.get("text") and value_font is not None:
+                    value_w = self._tracked_width(d, spec["text"], value_font, value_spacing)
+                    self._draw_tracked(d, spec["text"],
+                                       center_x - value_w / 2.0,
+                                       bar_bottom - self._label_pad_y_px - value_size,
+                                       value_font, text_color, value_spacing, value_stroke)
                 continue
             center_y = int(geo.center_y)
             bar_left = int(geo.x)
             bar_length = int(geo.width)
-            _pil_text(d, spec["label"], bar_left + self._label_pad_x_px,
-                      center_y - self._label_pad_y_px,
-                      size=self._label_font_px, fill=text_color_rgb)
-            value_w = d.textlength(spec["text"], font=label_font)
-            _pil_text(d, spec["text"],
-                      bar_left + bar_length - self._label_pad_x_px - int(value_w),
-                      center_y - self._label_pad_y_px,
-                      size=self._label_font_px, fill=text_color_rgb)
+            if spec.get("label") and label_font is not None:
+                self._draw_tracked(d, spec["label"],
+                                   bar_left + self._label_pad_x_px, center_y - self._label_pad_y_px,
+                                   label_font, text_color, label_spacing, label_stroke)
+            if spec.get("text") and value_font is not None:
+                value_w = self._tracked_width(d, spec["text"], value_font, value_spacing)
+                self._draw_tracked(d, spec["text"],
+                                   bar_left + bar_length - self._label_pad_x_px - value_w,
+                                   center_y - self._label_pad_y_px,
+                                   value_font, text_color, value_spacing, value_stroke)
 
     @staticmethod
     def _paint_glow_pil(img, bar_rect, fill_rect, glow_color,
@@ -886,13 +1197,34 @@ VERTICAL_FILL_DIRECTIONS = (FILL_DIRECTION_BOTTOM_TO_TOP, FILL_DIRECTION_TOP_TO_
 
 # Подписи (labels).
 LABEL_FONT_SIZE = 26
-LABEL_DEFAULT_TEXT_COLOR = (238, 242, 248)
+LABEL_TEXT_COLOR_WHITE = (255, 255, 255)
 LABEL_PAD_X = 14
 LABEL_PAD_Y = 16
+# Доля зоны столбца, отведённая под текст: ширина — для горизонтального бара,
+# высота — для вертикального столбца (верх/низ).  Надпись не должна занимать весь
+# столбец/бар, поэтому кегль ограничен и шириной, и этой долей.
+LABEL_AREA_WIDTH_FRACTION = 0.4
+LABEL_AREA_HEIGHT_FRACTION = 0.5
+# Максимальное значение-процент: гарантирует, что "100%" читается даже при
+# частично заполненном баре (эталон ширины для общего кегля значений).
+PERCENT_MAX_TEXT = "100%"
+# Имитация «жирного» через утолщающую обводку глифа (stroke): делитель кегля для
+# ширины обводки и запас по краям, который резервируем, чтобы текст оставался
+# внутри столбца/бара после утолщения.
+TEXT_STROKE_WIDTH_DIVISOR = 14
+# Доля жирности значений для подписей: кегль подписей больше, поэтому без масштаба
+# обводка выходила бы жирнее значений.  0.6 → чуть легче жирности значений.
+LABEL_TEXT_BOLD_SCALE = 0.6
+TEXT_STROKE_MARGIN_PX = 4
+# Межсимвольный интервал (трекинг) как доля кегля: стилевой шрифт плотный, без
+# трекинга символы слипаются.  Доля, а не фикс. px, чтобы интервал рос вместе с кеглем.
+TEXT_LETTER_SPACING_FRACTION = 0.12
 
 # Заглушка «нет данных».
 NO_DATA_FONT_SIZE = 30
+NO_DATA_TEXT = "no data"
 NO_DATA_TEXT_PAD = 34
+NO_DATA_HEIGHT_FRACTION = 0.2
 NO_DATA_DASH_X_SPAN = 51
 NO_DATA_DASH_Y_SPAN = 28
 

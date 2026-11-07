@@ -444,4 +444,211 @@ def test_renderer_density_scales_design_sizes():
     assert default._glow_blur_radius_px == 16
 
 
+def _layout_result(geometry: list):
+    from hardwarescreen.adapter.layout import LayoutResult
+
+    return LayoutResult(geometry=tuple(geometry), bar_width=geometry[0].width)
+
+
+def test_shared_font_size_fits_longest_label_in_column():
+    # Один общий кегль для всех подписей: он обязан быть таким, чтобы даже самая
+    # длинная надпись не выходила за ширину столбца (иначе наезжает на соседа).
+    renderer = LinearDashboardRenderer((1000, 400), density=1.0)
+    renderer._ensure_font_tools()
+    geom = _vertical_geometry([120.0, 320.0, 520.0, 720.0, 920.0],
+                              width=69.0, height=412.0)
+    labels = ["CPU", "GPU", "100%"]
+    size = renderer._shared_font_size(labels, "Spacetron", geom, True)
+    calc = renderer._font_size_calculator
+    for label in labels:
+        assert calc.measure_width(label, "Spacetron", size) <= 69.0
+
+
+def test_paint_text_pil_draws_labels_white_and_within_column():
+    # Надписи всегда белые и не выходят за ширину столбца.
+    from PIL import Image
+
+    renderer = LinearDashboardRenderer((1000, 400), density=1.0)
+    renderer._ensure_font_tools()
+    geom = _vertical_geometry([120.0, 340.0], width=69.0, height=412.0)
+    layout = _layout_result(geom)
+    img = Image.new("RGB", (1000, 400), (0, 0, 0))
+    specs = [{"label": "CPU", "text": "42%"}, {"label": "GPU", "text": "100%"}]
+    renderer._paint_text_pil(img, specs, layout, vertical=True)
+    pixels = img.load()
+    lab_size = renderer._shared_font_size([s["label"] for s in specs],
+                                          "Spacetron", geom, True)
+    for spec in specs:
+        assert renderer._font_size_calculator.measure_width(
+            spec["label"], "Spacetron", lab_size) <= 69.0
+    # Белые надписи на чёрном фоне — в кадре появляются чисто белые пиксели.
+    assert any(pixels[x, y] == (255, 255, 255)
+               for y in range(400) for x in range(1000))
+
+
+def test_renderer_font_family_defaults_to_spacetron():
+    renderer = LinearDashboardRenderer((1920, 440), density=1.0)
+    renderer._ensure_font_tools()
+    assert renderer._font_family == "Spacetron"
+
+
+def test_renderer_accepts_custom_font_family():
+    renderer = LinearDashboardRenderer((1920, 440), density=1.0, font_family="Custom")
+    renderer._ensure_font_tools()
+    assert renderer._font_family == "Custom"
+
+
+def test_letter_spacing_separates_glyphs():
+    # Трекинг добавляет межсимвольный интервал: измеренная ширина больше базовой,
+    # чтобы плотный стилевой шрифт не слипался.
+    from common.font_size import FontSizeCalculator
+
+    renderer = LinearDashboardRenderer((1000, 400), density=1.0, text_letter_spacing=0.2)
+    renderer._ensure_font_tools()
+    calc = renderer._font_size_calculator
+    size = calc.fit_to_width("100%", "Spacetron", 200.0)
+    raw = FontSizeCalculator().measure_width("100%", "Spacetron", size)
+    tracked = calc.measure_width("100%", "Spacetron", size)
+    assert tracked > raw
+
+
+def test_letter_spacing_default_is_applied():
+    renderer = LinearDashboardRenderer((1000, 400), density=1.0)
+    renderer._ensure_font_tools()
+    assert renderer._text_letter_spacing == ld.TEXT_LETTER_SPACING_FRACTION
+
+
+def test_label_font_family_defaults_to_value_font():
+    renderer = LinearDashboardRenderer((1000, 400), density=1.0)
+    renderer._ensure_font_tools()
+    assert renderer._label_font_family == "Spacetron"
+
+
+def test_label_font_family_can_differ_from_values():
+    renderer = LinearDashboardRenderer(
+        (1000, 400), density=1.0, font_family="Spacetron", label_font_family="Cyberpunk"
+    )
+    renderer._ensure_font_tools()
+    assert renderer._label_font_family == "Cyberpunk"
+    # Значения остаются в базовом семействе; подписи — в отдельном.
+    assert renderer._font_family == "Spacetron"
+
+
+def test_coerce_rgb_accepts_hex_and_tuple():
+    """Цвет колонки принимается и как '#rrggbb', и как тройка (r, g, b)."""
+    assert ld._coerce_rgb("#ff0000") == (255, 0, 0)
+    assert ld._coerce_rgb("#00ff00") == (0, 255, 0)
+    assert ld._coerce_rgb((12, 34, 56)) == (12, 34, 56)
+    # Невалидная строка/null откатываются к нейтральному (как hex_to_rgb).
+    assert ld._coerce_rgb("oops") == (80, 80, 90)
+
+
+def test_set_color_by_id_overrides_specs_color():
+    """Цвет колонки задаётся по id и перекрывает автоматический цвет значения."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    renderer.set_color("a", "#ff0000")
+    specs = renderer._specs(
+        [{"id": "a", "label": "A", "min": 0, "max": 100, "unit": "%"}],
+        {"a": 100.0},
+        {"accent": (79, 156, 249)},
+    )
+    assert specs[0]["color"] == (255, 0, 0)
+
+
+def test_set_text_and_label_by_id_override_specs():
+    """Текст значения и подпись задаются по id и не зависят от данных."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    renderer.set_text("a", "99°")
+    renderer.set_label("a", "MAG")
+    specs = renderer._specs(
+        [{"id": "a", "label": "A", "min": 0, "max": 100, "unit": "%"}],
+        {"a": 100.0},
+        {"accent": (79, 156, 249)},
+    )
+    assert specs[0]["text"] == "99°"
+    assert specs[0]["label"] == "MAG"
+
+
+def test_set_color_by_index_seeds_from_render():
+    """Цвет колонки можно задать по индексу после того, как известен порядок id."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    renderer._ids = ["a", "b"]  # порядок колонок известен (был первый рендер)
+    renderer.set_color(1, (0, 255, 0))
+    specs = renderer._specs(
+        [{"id": "a", "label": "A", "min": 0, "max": 100, "unit": "%"},
+         {"id": "b", "label": "B", "min": 0, "max": 100, "unit": "%"}],
+        {"a": 0.0, "b": 0.0},
+        {"accent": (79, 156, 249)},
+    )
+    assert specs[1]["color"] == (0, 255, 0)
+    assert specs[0]["color"] == value_color(0.0)
+
+
+def test_set_column_overloaded_sets_all_or_part():
+    """Перегруженный set_column меняет только переданные аспекты колонки."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    renderer.set_column("a", color="#ff0000", text="50%", label="CPU", text_color="#00ff00")
+    renderer.set_column("a", label="GPU")  # только подпись, остальное сохраняется
+    specs = renderer._specs(
+        [{"id": "a", "label": "A", "min": 0, "max": 100, "unit": "%"}],
+        {"a": 0.0},
+        {"accent": (79, 156, 249)},
+    )
+    assert specs[0]["color"] == (255, 0, 0)
+    assert specs[0]["text"] == "50%"
+    assert specs[0]["label"] == "GPU"
+    # Цвет текста не виден в _specs — он задан отдельным переопределением.
+    assert renderer._column_text_color["a"] == (0, 255, 0)
+
+
+def test_resolve_column_id_requires_render_for_index():
+    """Индекс без известного порядка колонок отклоняется; id принимается сразу."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    assert renderer._resolve_column_id("a") == "a"
+    with pytest.raises(IndexError):
+        renderer._resolve_column_id(0)
+    renderer._ids = ["a", "b"]
+    assert renderer._resolve_column_id(1) == "b"
+    with pytest.raises(IndexError):
+        renderer._resolve_column_id(5)
+
+
+def test_clear_column_and_clear_columns_remove_overrides():
+    """Сброс колонки убирает все её переопределения; clear_columns — все сразу."""
+    renderer = LinearDashboardRenderer((1920, 440))
+    renderer._ids = ["a", "b"]
+    renderer.set_column("a", color="#ff0000", text="50%")
+    renderer.set_column("b", color="#00ff00")
+    renderer.clear_column(0)
+    assert "a" not in renderer._column_color
+    assert "a" not in renderer._column_text
+    assert "b" in renderer._column_color
+    renderer.clear_columns()
+    assert renderer._column_color == {}
+    assert renderer._column_text_color == {}
+    assert renderer._column_text == {}
+    assert renderer._column_label == {}
+
+
+def test_paint_text_pil_uses_per_column_text_color():
+    """Цвет текста задаётся по id: нужная колонка рисуется заданным цветом."""
+    from PIL import Image
+
+    renderer = LinearDashboardRenderer((1000, 400), density=1.0)
+    renderer._ensure_font_tools()
+    renderer.set_text_color("a", "#00ff00")
+    geom = _vertical_geometry([120.0, 340.0], width=69.0, height=412.0)
+    layout = _layout_result(geom)
+    img = Image.new("RGB", (1000, 400), (0, 0, 0))
+    specs = [{"id": "a", "label": "A", "text": "42%"},
+             {"id": "b", "label": "B", "text": "100%"}]
+    renderer._paint_text_pil(img, specs, layout, vertical=True)
+    pixels = img.load()
+    # Зелёный текст колонки "a" (заданный цвет) и белый текст колонки "b" (по умолчанию).
+    assert any(pixels[x, y] == (0, 255, 0)
+               for y in range(400) for x in range(1000))
+    assert any(pixels[x, y] == (255, 255, 255)
+               for y in range(400) for x in range(1000))
+
+
 

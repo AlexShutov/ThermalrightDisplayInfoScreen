@@ -97,7 +97,17 @@ def _color_palette_enabled() -> bool:
     ``HARDWARESCREEN_VALUE_COLOR`` = ``1``/``true``/``on`` → включено (по
     умолчанию); ``0``/``false``/``off`` → выключено (столбцы общим акцентом).
     """
-    raw = (os.environ.get("HARDWARESCREEN_VALUE_COLOR") or "").strip().lower()
+    raw = os.environ.get("HARDWARESCREEN_VALUE_COLOR") or ""
+    if raw.strip() == "":
+        return True
+    return raw.strip().lower() not in ("0", "false", "off", "no", "disable", "disabled")
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    """Парсит булев env-флаг: ``1``/``true``/``on`` (или ``default``) — включено."""
+    raw = (os.environ.get(name) or "").strip().lower()
+    if raw == "":
+        return default
     return raw not in ("0", "false", "off", "no", "disable", "disabled")
 
 
@@ -259,6 +269,33 @@ class CompositeDashboardRenderer:
             if rings_img is not None:
                 canvas.alpha_composite(rings_img, (self._rings_x, self._rings_y))
         return canvas.tobytes()
+
+    # Проброс настроек колонок линейного индикатора: композит адресует датчики по
+    # уникальному ``id`` (или индексу), а переопределения применяет внутренний
+    # ``self._linear``.  Это позволяет менять цвет/текст колонок вокруг, не трогая
+    # способ компоновки колец.
+    def set_column(self, target, *, color=None, text_color=None,
+                   text=None, label=None) -> None:
+        self._linear.set_column(target, color=color, text_color=text_color,
+                                text=text, label=label)
+
+    def set_color(self, target, color) -> None:
+        self._linear.set_color(target, color)
+
+    def set_text_color(self, target, color) -> None:
+        self._linear.set_text_color(target, color)
+
+    def set_text(self, target, text) -> None:
+        self._linear.set_text(target, text)
+
+    def set_label(self, target, label) -> None:
+        self._linear.set_label(target, label)
+
+    def clear_column(self, target) -> None:
+        self._linear.clear_column(target)
+
+    def clear_columns(self) -> None:
+        self._linear.clear_columns()
 
     @staticmethod
     def _bytes_to_image(raw: bytes, size: tuple[int, int]) -> Image.Image | None:
@@ -482,6 +519,22 @@ class DashboardModule(BaseModule, key=_KEY):
                 ),
                 "value_palette_on": _color_palette_enabled(),
                 "density": density,
+                "font_family": os.environ.get(
+                    "HARDWARESCREEN_FONT", "Spacetron"
+                ).strip() or None,
+                "label_font_family": os.environ.get(
+                    "HARDWARESCREEN_LABEL_FONT", ""
+                ).strip() or None,
+                "text_bold": _env_flag("HARDWARESCREEN_TEXT_BOLD", True),
+                "text_letter_spacing": _optional_float_env(
+                    "HARDWARESCREEN_TEXT_LETTER_SPACING"
+                ),
+                "label_text_bold": _env_flag(
+                    "HARDWARESCREEN_LABEL_TEXT_BOLD", True
+                ),
+                "label_text_bold_scale": _optional_float_env(
+                    "HARDWARESCREEN_LABEL_TEXT_BOLD_SCALE"
+                ),
             }
             if _composite_enabled():
                 region = _composite_regions(size, px_per_mm)
