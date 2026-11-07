@@ -94,13 +94,43 @@ def composite(monkeypatch):
                 sys.modules.pop(name, None)
 
 
-def test_composite_regions_right_margin(composite):
+def test_composite_regions_margins(composite):
     _, regions_fn = composite
     regions = regions_fn((1920, 440), 6.86)
-    right_margin_px = 1920 - regions["rings_x"] - regions["rings_size"][0]
-    assert 30 <= right_margin_px <= 40  # 5mm * ~6.86px/mm ≈ 34px
+    # Зона колец — почти весь экран (полная высота панели), прижата к правому краю.
     assert regions["rings_size"] == (440, 440)
+    assert regions["rings_x"] == 1920 - 440
+    assert regions["rings_y"] == 0
     assert regions["left_size"][1] == 440
+
+
+def test_composite_limits_rings_to_max(composite, monkeypatch):
+    import activityrings.rings as rings_mod  # noqa: PLC0415
+
+    from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
+
+    CompositeDashboardRenderer, _ = composite
+    captured: dict[str, int] = {}
+
+    def spy(gauges, size, progress=None, **kwargs):
+        from PIL import Image
+
+        captured["count"] = len(gauges)
+        return Image.new("RGBA", (int(size[0]), int(size[1])), (0, 0, 0, 0))
+
+    monkeypatch.setattr(rings_mod, "render_gauge_rings", spy)
+
+    size = (1920, 440)
+    setup = [
+        {"id": f"g{i}", "label": f"G{i}", "min": 0, "max": 100, "unit": "%"}
+        for i in range(6)
+    ]
+    values = {g["id"]: 50 + i for i, g in enumerate(setup)}
+    linear = LinearDashboardRenderer((1438, 440), background=None, fps=8.0, layout=None)
+    renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
+    renderer(setup, values, {}, size, None)
+    # Колец столько, сколько датчиков, но не больше COMPOSITE_MAX_RINGS (4).
+    assert captured["count"] == 4
 
 
 def test_composite_renderer_emits_transparent_overlay(composite):

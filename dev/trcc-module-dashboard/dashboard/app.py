@@ -75,8 +75,19 @@ def _resolve_px_per_mm(size: tuple[int, int], env_value: float | None) -> float:
 
 
 # --- Константы композита «линейный индикатор слева + кольца датчиков справа» ---
-# Правый отступ от края панели, мм (0.5см = 5мм).
-COMPOSITE_RIGHT_MARGIN_MM = 5.0
+# Отступ (маржа) от краёв панели до ЗОНЫ КОЛЕЦ, мм. Зона колец занимает почти весь
+# экран (полную высоту панели), а отступ до края задаёт рендерер колец (edge_margin).
+COMPOSITE_RINGS_MARGIN_MM = 2.0
+# Зазор между краями соседних колец, мм.
+RING_GAP_MM = 1.0
+# Радиус внутренней границы самого внутреннего кольца, мм (маленький центр →
+# кольца толстые, почти на весь круг).
+RINGS_INNER_RADIUS_MM = 5.0
+# Доля полу-стороны, до которой заполняются кольца: близко к 1, чтобы кольца были
+# большими (вплоть до отступа ``COMPOSITE_RINGS_MARGIN_MM`` от краёв зоны).
+COMPOSITE_RINGS_OUTER_FRACTION = 0.96
+# Сколько датчиков показываем кольцами (кольцо на датчик) — НЕ все, чтобы полоски не были тонкими.
+COMPOSITE_MAX_RINGS = 4
 # Зазор между левым линейным регионом и правой зоной колец, px.
 COMPOSITE_INNER_GAP_PX = 8
 
@@ -94,18 +105,20 @@ def _composite_regions(size: tuple[int, int], px_per_mm: float) -> dict:
     """Регионы кадра для композита.
 
     Возвращает ``left_size`` (линейный индикатор), ``rings_size`` (квадратная зона
-    колец, по высоте панели) и ``rings_x`` (левая координата зоны колец, с правым
-    отступом ``COMPOSITE_RIGHT_MARGIN_MM``).
+    колец — почти весь экран: полная высота панели) и ``rings_x``/``rings_y``
+    (верхний левый угол зоны колец, у правого края панели). Отступ ``2мм`` от
+    краёв до самих колец задаёт рендерер (см. ``COMPOSITE_RINGS_MARGIN_MM``).
     """
     panel_w, panel_h = int(size[0]), int(size[1])
-    right_margin_px = round(COMPOSITE_RIGHT_MARGIN_MM * px_per_mm)
     rings_side = panel_h
-    rings_x = max(0, panel_w - rings_side - right_margin_px)
+    rings_x = max(0, panel_w - rings_side)
+    rings_y = 0
     left_width = max(1, rings_x - COMPOSITE_INNER_GAP_PX)
     return {
         "left_size": (left_width, panel_h),
         "rings_size": (rings_side, rings_side),
         "rings_x": rings_x,
+        "rings_y": rings_y,
     }
 
 
@@ -154,7 +167,11 @@ class CompositeDashboardRenderer:
         self._left_size = regions["left_size"]
         self._rings_size = regions["rings_size"]
         self._rings_x = regions["rings_x"]
+        self._rings_y = regions["rings_y"]
         self._value_palette_on = value_palette_on
+        self._px_per_mm = px_per_mm
+        max_rings = _optional_float_env("HARDWARESCREEN_COMPOSITE_MAX_RINGS")
+        self._max_rings = int(max_rings) if max_rings is not None else COMPOSITE_MAX_RINGS
 
     def __call__(self, setup, values, palette, size, background=None) -> bytes:
         pal = _palette(palette or {})
@@ -166,7 +183,7 @@ class CompositeDashboardRenderer:
                 canvas.alpha_composite(left_img, (0, 0))
             rings_img = self._render_rings(setup, values, pal)
             if rings_img is not None:
-                canvas.alpha_composite(rings_img, (self._rings_x, 0))
+                canvas.alpha_composite(rings_img, (self._rings_x, self._rings_y))
         return canvas.tobytes()
 
     @staticmethod
@@ -188,7 +205,7 @@ class CompositeDashboardRenderer:
             return None
         entries: list[tuple[str, str, tuple[int, int, int], float]] = []
         progress: dict[str, float] = {}
-        for gauge in setup:
+        for gauge in setup[: self._max_rings]:
             gid = gauge.get("id", "")
             ring_key = str(gid)
             vmin = float(gauge.get("min", 0))
@@ -208,8 +225,25 @@ class CompositeDashboardRenderer:
             progress[ring_key] = fraction
         if not entries:
             return None
+        margin_px = round(COMPOSITE_RINGS_MARGIN_MM * self._px_per_mm)
+        gap_mm = _optional_float_env("HARDWARESCREEN_RINGS_GAP_MM")
+        if gap_mm is None:
+            gap_mm = RING_GAP_MM
+        gap_px = round(gap_mm * self._px_per_mm)
+        inner_radius_mm = _optional_float_env("HARDWARESCREEN_RINGS_INNER_RADIUS_MM")
+        if inner_radius_mm is None:
+            inner_radius_mm = RINGS_INNER_RADIUS_MM
+        inner_radius_px = round(inner_radius_mm * self._px_per_mm)
         try:
-            return render_gauge_rings(entries, self._rings_size, progress=progress)
+            return render_gauge_rings(
+                entries,
+                self._rings_size,
+                progress=progress,
+                outer_fraction=COMPOSITE_RINGS_OUTER_FRACTION,
+                edge_margin=float(margin_px),
+                gap_px=float(gap_px),
+                inner_radius_px=float(inner_radius_px),
+            )
         except Exception as exc:  # noqa: BLE001 - слишком много датчиков и т.п.
             log.warning("dashboard: cannot render gauge rings: %s", exc)
             return None
