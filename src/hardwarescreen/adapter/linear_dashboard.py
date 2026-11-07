@@ -73,6 +73,22 @@ def _focus_color() -> tuple[int, int, int]:
     return hex_to_rgb(os.environ.get("HARDWARESCREEN_FOCUS_COLOR", "#00c85a"))
 
 
+# ``SelectionController`` из common-сабмодуля импортируем лениво — он headless
+# (без Qt/Pillow), но пакет ``common`` живёт в ``DashboardWidgets``, поэтому
+# основной ``hardwarescreen`` не должен требовать сабмодуль на импорте.
+_SELECTION = None
+
+
+def _ensure_selection_controller():
+    """Lazily import the shared ``SelectionController`` (no submodule at import)."""
+    global _SELECTION
+    if _SELECTION is None:
+        from common.selection import SelectionController  # noqa: PLC0415
+
+        _SELECTION = SelectionController
+    return _SELECTION
+
+
 def _pil_font(size: int):
     try:
         from PIL import ImageFont
@@ -155,12 +171,22 @@ class LinearDashboardRenderer:
         self._progress_target: list[float] = []
         self._progress_start: list[float] = []
         # Выбор меняется вместе со сменой данных (через раз) и держится всё окно
-        # данных (~5 с), а не мигает на собственном таймере.
-        self._sel_index: int | None = None
-        self._sel_should_select = True
-        self._sel_window_start = 0.0
-        self._sel_window_is_select = False
+        # данных (~5 с), а не мигает на собственном таймере.  Логика выделения
+        # общая (см. ``common/selection``) — её же использует кольцевой индикатор.
+        self._selection = _ensure_selection_controller()(
+            transition_s=self._selection_transition_s, ease=self._ease, rng=self._rng
+        )
         self._last_content_signature: object | None = None
+
+    @property
+    def _sel_index(self) -> int | None:
+        """Индекс подсвеченного столбца (общий драйвер выделения)."""
+        return self._selection.active_index
+
+    @property
+    def _sel_window_is_select(self) -> bool:
+        """Истина, если текущее окно данных «выбранное» (а не «пропуск»)."""
+        return self._selection.is_select_window
 
     def __call__(
         self,
@@ -661,10 +687,7 @@ class LinearDashboardRenderer:
 
     def _active_index(self, focus: list[float], selection_on: bool):
         """Index of the currently selected bar (the one with the highest focus)."""
-        if not selection_on or not focus:
-            return None
-        peak = max(focus)
-        return focus.index(peak) if peak > FOCUS_EPSILON else None
+        return self._selection.active_index_of(focus, selection_on)
 
     def _select_strategy(self, focus: list[float], selection_on: bool):
         """Выбирает стратегию роста по числу выбранных индикаторов.
@@ -702,17 +725,8 @@ class LinearDashboardRenderer:
 
     def _advance_selection(self, now: float, count: int) -> None:
         """Открывает новое окно данных: «через раз» выбрать случайный бар или пропустить."""
-        if count == 0 or not self._layout.is_selection_enabled:
-            self._sel_index = None
-            return
-        # Через раз: одно окно выделяет случайный бар, следующее — нет.
-        if self._sel_should_select:
-            self._sel_index = self._rng.randrange(count)
-            self._sel_window_is_select = True
-        else:
-            self._sel_window_is_select = False  # предыдущий пульс гаснет в этом окне
-        self._sel_window_start = now
-        self._sel_should_select = not self._sel_should_select
+        self._selection.enabled = self._layout.is_selection_enabled
+        self._selection.advance(now, count)
 
     def _selection_focus(self, now: float, count: int) -> list[float]:
         """Яркость/фокус выделения в текущем окне данных.
@@ -722,35 +736,13 @@ class LinearDashboardRenderer:
         остаётся выключенным.  Так выделение меняется вместе с данными и держится
         весь показ (~5 с), а не мигает.
         """
-        focus = [0.0] * count
-        if count == 0 or not self._layout.is_selection_enabled or self._sel_index is None:
-            return focus
-        if self._sel_index >= count:
-            # Баров стало меньше под активным пульсом — убираем его (иначе OOB).
-            self._sel_index = None
-            self._sel_window_is_select = False
-            return focus
-        transition = max(FOCUS_EPSILON, self._selection_transition_s)
-        elapsed = now - self._sel_window_start
-        if self._sel_window_is_select:
-            focus[self._sel_index] = (
-                self._ease(elapsed / transition) if elapsed <= transition else 1.0
-            )
-        else:
-            focus[self._sel_index] = (
-                1.0 - self._ease(elapsed / transition) if elapsed <= transition else 0.0
-            )
-        return focus
+        return self._selection.focus(now, count)
 
     def _selection_dim(self, focus_value: float, selection_on: bool,
                        selection_strength: float) -> float:
         """Яркость бара/подписи: при idle полная, при пульсе — затемняется всё,
         кроме подсвеченного бара."""
-        if selection_on and selection_strength > FOCUS_EPSILON:
-            if focus_value > FOCUS_EPSILON:
-                return 1.0
-            return 1.0 - DIM_RANGE * selection_strength
-        return 1.0
+        return self._selection.dim(focus_value, selection_on, selection_strength)
 
     def _eased_progress(self, idx: int, target: float, now: float) -> float:
         """Возвращает текущее значение бара.
@@ -814,13 +806,12 @@ VALUE_TWEEN_S = 0.3
 # всё окно (~5 с), не мигает.
 SELECTION_TRANSITION_S = 0.6  # время нарастания/затухания выделения в начале окна
 
-# Выделение (selection) — затемнение и z-порядок.
-DIM_MIN = 0.35               # яркость полностью затемнённого (невыделенного) бара
-DIM_RANGE = 1.0 - DIM_MIN    # насколько гаснет невыделенный бар при активном пульсе
+# Выделение (selection) — затемнение и z-порядок.  Значения затемнения (DIM_MIN/
+# DIM_RANGE) и порога активности (SELECTION_ACTIVE_EPSILON) теперь живут в общем
+# ``common/selection``; здесь — только z-порядок, зависящий от формы столбца.
 Z_FOREGROUND = 100.0         # выделенный бар всегда поверх
 Z_BASE = 1.0                 # остальные бары в порядке фокуса
 Z_FOCUS_WEIGHT = 2.0         # вес фокуса при сортировке
-FOCUS_EPSILON = 1e-6         # порог «есть активный бар»
 
 # Физические размеры панели (Trofeo Vision, маркетинговый «11.3») — для пересчёта
 # мм → px через px_per_mm, чтобы зазоры под свечение были заданы в миллиметрах, а не
