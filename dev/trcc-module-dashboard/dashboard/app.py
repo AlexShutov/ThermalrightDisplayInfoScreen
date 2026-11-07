@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import threading
 import time
 
@@ -29,19 +30,73 @@ from manager.store import AtomicStateFile
 log = logging.getLogger("hardwarescreen.dashboard")
 
 
-# ``SelectionController`` из common-сабмодуля импортируем лениво (headless, без Qt),
-# чтобы модуль собирался, даже если сабмодуль не разложен на путях.
-_SELECTION = None
+# Собственная логика выделения колец: один активный круг, без общего
+# ``SelectionController`` из ``common.selection`` (который считает число выбранных).
+_RING_SELECTION_RNG = random.Random()
 
 
-def _ensure_selection_controller():
-    """Lazily import the shared ``SelectionController`` (no submodule at import)."""
-    global _SELECTION
-    if _SELECTION is None:
-        from common.selection import SelectionController  # noqa: PLC0415
+class _RingSelection:
+    """Подсветка одного круга за окно данных (своя простая логика для колец).
 
-        _SELECTION = SelectionController
-    return _SELECTION
+    Не переиспользует ``common.selection``: не считает число выбранных кругов и не
+    меняет толщину.  При смене окна данных плавно переносит подсветку с одного
+    кольца на другое (предыдущее гаснет, новое вспыхивает).  ``focus`` — per-ring
+    значения 0..1.
+    """
+
+    def __init__(self, transition_s: float) -> None:
+        self._transition_s = max(0.01, float(transition_s))
+        self._active_index = 0
+        # Кольцо, которое гаснет при смене активного (``None`` — ничего не гаснет).
+        self._fading_index: int | None = None
+        # Помечаем, что актив уже выбирался: на САМОМ первом окне ничего не гаснет.
+        self._has_active = False
+        self._changed_at = 0.0
+        self._enabled = False
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        self._enabled = bool(value)
+
+    def window_changed(self, now: float, count: int) -> None:
+        """Новое окно данных: выбираем свежий активный круг (ровно один)."""
+        if not self._enabled or count <= 0:
+            return
+        if self._has_active:
+            # Прежний активный круг гаснет (фокус 1 -> 0), новый вспыхивает.
+            self._fading_index = self._active_index
+        else:
+            self._fading_index = None
+        if count <= 1:
+            self._active_index = 0
+        else:
+            candidates = [index for index in range(count) if index != self._active_index]
+            self._active_index = _RING_SELECTION_RNG.choice(candidates)
+        self._has_active = True
+        self._changed_at = now
+
+    def focus(self, now: float, count: int) -> list[float]:
+        """Per-ring focus: активный круг вспыхивает, прежний плавно гаснет."""
+        focus = [0.0] * count
+        if not self._enabled or count <= 0:
+            return focus
+        from common.easing import ease_out_cubic  # noqa: PLC0415
+
+        progress = min(1.0, max(0.0, (now - self._changed_at) / self._transition_s))
+        eased = ease_out_cubic(progress)
+        if 0 <= self._active_index < count:
+            focus[self._active_index] = eased
+        if (
+            self._fading_index is not None
+            and self._fading_index != self._active_index
+            and 0 <= self._fading_index < count
+        ):
+            focus[self._fading_index] = 1.0 - eased
+        return focus
 
 
 _KEY = "dashboard"
@@ -119,8 +174,6 @@ RINGS_INNER_RADIUS_MM = 7.0
 # Доля полу-стороны, до которой заполняются кольца: близко к 1, чтобы кольца были
 # большими (вплоть до отступа ``COMPOSITE_RINGS_MARGIN_MM`` от краёв зоны).
 COMPOSITE_RINGS_OUTER_FRACTION = 0.96
-# Сколько датчиков показываем кольцами (кольцо на датчик) — НЕ все, чтобы полоски не были тонкими.
-COMPOSITE_MAX_RINGS = 4
 # Зазор между левым линейным регионом и правой зоной колец, px.
 COMPOSITE_INNER_GAP_PX = 8
 
@@ -209,17 +262,14 @@ class CompositeDashboardRenderer:
         self._rings_y = regions["rings_y"]
         self._value_palette_on = value_palette_on
         self._px_per_mm = px_per_mm
-        max_rings = _optional_float_env("HARDWARESCREEN_COMPOSITE_MAX_RINGS")
-        self._max_rings = int(max_rings) if max_rings is not None else COMPOSITE_MAX_RINGS
         # Скругление концов сектора колец: та же пропорция, что у линейного
         # (по умолчанию), с возможностью отдельно переопределить через env.
         self._ring_start_corner = ring_start_corner_fraction
         self._ring_end_corner = ring_end_corner_fraction
-        # Драйвер выделения колец: общий ``SelectionController`` (тот же механизм, что
-        # у линейного), выбирает «какое кольцо подсветить» на каждое окно данных.
-        self._ring_selection = _ensure_selection_controller()(
-            transition_s=RING_SELECTION_TRANSITION_S
-        )
+        # Драйвер выделения колец — СОБСТВЕННАЯ простая логика (не общий
+        # ``SelectionController`` из ``common.selection``): подсвечивает один круг на
+        # каждое окно данных, не считает число выбранных и не меняет толщину.
+        self._ring_selection = _RingSelection(RING_SELECTION_TRANSITION_S)
         self._rings_signature: object | None = None
 
     def __call__(self, setup, values, palette, size, background=None) -> bytes:
@@ -227,9 +277,9 @@ class CompositeDashboardRenderer:
         canvas = Image.new("RGBA", self._size, (0, 0, 0, 0))
         if (setup or []) and (values or {}):
             now = time.monotonic()
-            # Один и тот же набор датчиков на обоих панелях (не больше ``_max_rings``),
-            # иначе слева и справа окажутся разные данные.
-            shared_gauges = setup[: self._max_rings]
+            # Один и тот же ПОЛНЫЙ набор датчиков на обоих панелях (все столбцы слева
+            # и все кольца справа), иначе слева и справа окажутся разные данные.
+            shared_gauges = list(setup)
             raw_left = self._linear(shared_gauges, values, palette, self._left_size, None)
             left_img = self._bytes_to_image(raw_left, self._left_size)
             if left_img is not None:
@@ -267,7 +317,7 @@ class CompositeDashboardRenderer:
             return None
         entries: list[tuple[str, str, tuple[int, int, int], float]] = []
         progress: dict[str, float] = {}
-        for gauge in setup[: self._max_rings]:
+        for gauge in setup:
             gid = gauge.get("id", "")
             ring_key = str(gid)
             vmin = float(gauge.get("min", 0))
@@ -292,7 +342,7 @@ class CompositeDashboardRenderer:
         if sig != self._rings_signature:
             self._rings_signature = sig
             self._ring_selection.enabled = count > 0
-            self._ring_selection.advance(now, count)
+            self._ring_selection.window_changed(now, count)
         focus = self._ring_selection.focus(now, count)
         # Порядок колец «из центра наружу»: первый датчик линейного (слева) — центральное
         # (внутреннее) кольцо, последний — внешнее.  Раскладчик колец делает первым

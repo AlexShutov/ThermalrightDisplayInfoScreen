@@ -104,7 +104,7 @@ def test_composite_regions_margins(composite):
     assert regions["left_size"][1] == 440
 
 
-def test_composite_limits_rings_to_max(composite, monkeypatch):
+def test_composite_uses_all_gauges_for_rings(composite, monkeypatch):
     import activityrings.rings as rings_mod  # noqa: PLC0415
 
     from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
@@ -129,8 +129,8 @@ def test_composite_limits_rings_to_max(composite, monkeypatch):
     linear = LinearDashboardRenderer((1438, 440), background=None, fps=8.0, layout=None)
     renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
     renderer(setup, values, {}, size, None)
-    # Колец столько, сколько датчиков, но не больше COMPOSITE_MAX_RINGS (4).
-    assert captured["count"] == 4
+    # Потолка больше нет: кольца (и левые столбцы) используют ВСЕ датчики (6).
+    assert captured["count"] == 6
 
 
 def test_composite_renderer_emits_transparent_overlay(composite):
@@ -178,7 +178,7 @@ def test_composite_renderer_empty_setup_is_safe(composite):
 
 
 def test_composite_rings_selection_driver(composite):
-    """Общий SelectionController подсвечивает кольцо и чередует окна данных."""
+    """Собственный драйвер колец подсвечивает один круг; при смене окна актив переносится."""
     CompositeDashboardRenderer, _ = composite
     from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
 
@@ -193,13 +193,13 @@ def test_composite_rings_selection_driver(composite):
     )
     renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
 
-    # Первое окно данных — «выбрать»: активный индекс в пределах числа колец.
+    # Первое окно данных: выделение включено, активный индекс в пределах числа колец.
     renderer(setup, {"cpu": 50, "gpu": 60, "ram": 40}, {}, size, None)
-    assert renderer._ring_selection.is_select_window is True
-    assert renderer._ring_selection.active_index in (0, 1, 2)
+    assert renderer._ring_selection.enabled is True
+    first_active = renderer._ring_selection._active_index
+    assert first_active in (0, 1, 2)
 
-    # Новое окно данных — «пропуск» (активный пульс гаснет), затем снова «выбрать».
-    renderer(setup, {"cpu": 51, "gpu": 61, "ram": 41}, {}, size, None)
-    assert renderer._ring_selection.is_select_window is False
-    renderer(setup, {"cpu": 52, "gpu": 62, "ram": 42}, {}, size, None)
-    assert renderer._ring_selection.is_select_window is True
+    # Новое окно данных (значения изменились): активный круг переносится (или остаётся
+    # в допустимых пределах), т.е. драйвер продолжает работать по своей логике.
+    renderer(setup, {"cpu": 55, "gpu": 65, "ram": 45}, {}, size, None)
+    assert renderer._ring_selection._active_index in (0, 1, 2)
