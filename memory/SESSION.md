@@ -18,6 +18,24 @@ F ✓, G ✓). Рантайм на данный момент: менеджер �
 (`dashboard:true` в trcc.json -> авто-включение при старте демона).
 
 ## Сделано (этот прогон / недавно)
+- **Цвет-по-значению + стратегии выбора + композит «линейный слева + кольца справа» (ЗАПУШЕНО):**
+  - `e727111`/`7f25fc8` — цвет колонок из шкалы «значение → цвет» (value_color), свечение выделенного
+    бара цветом состояния, единая подложка при цветовой палитре (`HARDWARESCREEN_VALUE_COLOR`).
+  - `f382d3a` — `adapter/selection_strategy.py`: `SelectSingleIndicator`/`SelectMultipleIndicators`
+    (при >1 выбранных и соседних зазор ≥ `GLOW_MIN_GAP_MM`), интеграция в `LinearDashboardRenderer`.
+  - сабмодуль `7104a7a`+`c69d3b6`+`63e098d` — то же для колец (`rings_strategy.py`, `rings_layout` через
+    `min_gap_px`/`_growth_plan`), `gauge_ring_bases`/`render_gauge_rings` (кольцо на датчик),
+    transparent RGBA-оверлей `render_rings(transparent=True)` для укладки поверх темы.
+  - `dea9f1d` — композит `CompositeDashboardRenderer` в GPL-модуле (`dev/trcc-module-dashboard/dashboard/app.py`):
+    линейный индикатор слева + кольца датчиков справа, правый отступ `COMPOSITE_RIGHT_MARGIN_MM=5.0`
+    (~34px), включение `HARDWARESCREEN_COMPOSITE=rings_right`. Кольца = те же данные (min/max → доля,
+    цвет `value_color`). Плюс фикс утечки `_QRECTF` в `tests/test_linear_dashboard.py`
+    (autouse-фикстура) и tests `tests/test_composite_renderer.py`, probe `tools/probe_composite.py`.
+  - Ворота: main ruff/pytest зелёные, mypy — только 8 пре-существующих (PyQt-attr-defined, подтверждены по
+    базе 7f25fc8); сабмодуль pytest зелёный, mypy/ruff по activityrings без новых ошибок (4 ruff —
+    пре-существующие в `test_rings_focus.py`). Баг-хунт по композиту: найдены+исправлены major
+    (progress-ключ `str(gid)`) и minors (хрупкий фолбэк `_palette` → убран, непрозрачный квадрат колец →
+    transparent RGBA, cover-подгонка фона).
 - **Переименование пакета** `trofeo` -> `hardwarescreen` (git-путь, директория пакета, скрипты, deploy,
   доки), remote не менялся. Ветка `web-contract-hardening` (в `SESSION.md` раньше было
   `rename-hardwarescreen` — устарело).
@@ -124,6 +142,35 @@ F ✓, G ✓). Рантайм на данный момент: менеджер �
   `adapter/linear_dashboard.py`: `_paint_glow_pil`/`_paint_bar` переписаны на читаемые имена
   (`box_left`/`box_top`/`bar_height`/`corner_radius`), магические литералы вынесены в константы в конец
   файла. ruff/mypy чисто, 82 pytest, баг-хунт (см. ниже). **НЕ ЗАКОММИЧЕНО.**
+- **Случайный выбор и скорость анимации (этот прогон, НЕ ЗАКОММИЧЕНО):** выбор бара
+  теперь меняется ВМЕСТЕ со сменой данных и держится всё окно (~5 с), а не мигает на
+  собственном таймере. В `adapter/linear_dashboard.py`: `_content_signature` (сигнатура
+  setup/values/palette) → при её смене `_advance_selection(now, count)` чередует
+  select/skip («через раз»), `_selection_focus` плавно наращивает/гасит и держит
+  выделение до следующего окна. Позиция выбранного бара случайна
+  (`_rng.randrange(count)`). Значения «добегают» до цели за **0.3 с** (фиксированная
+  длительность в `_eased_progress`: `from + (target-from)*ease_out(frac)`, вместо
+  старой экспоненты; `_last_time`/`exp` убраны, добавлены
+  `_progress_from/_progress_target/_progress_start`). Константы `VALUE_TWEEN_S=0.3`,
+  `SELECTION_TRANSITION_S=0.6`; удалены `SELECTION_PROB/HOLD/IDLE`, `selection_prob`.
+  `_ensure_qt` с фолбэком `_fallback_ease_out_cubic`. `stubdata.yaml` `poll_s=5.0`
+  (окно данных ~5 с). Тесты `tests/test_linear_dashboard.py` (чередование, удержание,
+  случайные позиции, static-layout off, 300 мс, сигнатура). ruff/mypy чисто,
+  88 pytest, баг-хунт: 0 critical / 0 major (7 minor, исправлены неточный комментарий
+  и новая строка). Демон и продюсер перезапущены → панель `showing: the Dashboard module`.
+  **НЕ ЗАКОММИЧЕНО.**
+- **Диагностика «тема не показывается» — РАЗРЕШЕНО (этот прогон).** Дашборд рисуется как
+   **прозрачный оверлей поверх темы** (`module_overlay`), а не как background-источник
+   (`module_source`). Ключ к пониманию: `host.overlay` в модуле — это **overlay-порт**
+   (`trcc/services/modules.py` `_Overlay.show` → `services.show_overlay` → `set_module_overlay`),
+   он НЕ трогает `module_source`. `display_source` (для «showing: ...») смотрит на `module_source`,
+   поэтому при живом оверлее `trcc status` честно пишет «the theme's background» — это ожидаемо,
+   тема продолжает играть ПОД дашбордом (StopVideo не вызывается). В логе подтверждено:
+   `composite renderer (linear-left + gauge rings right)`, `show_overlay: 0416:5408 <- dashboard.source`,
+   `set_module_overlay: key=0416:5408 module=dashboard`. Прозрачный RGBA-оверлей (`e367591`)
+   не запекает тему — она просвечивает в не-прозрачных зонах. Свежий демон (bgp_…, pid 13289)
+   с `HARDWARESCREEN_COMPOSITE=rings_right` показывает дашборд поверх темы. Установленная копия
+   модуля синхронизирована с dev. Для диагностики модуль временно писал в `/tmp` (убрано).
 
 ## Открытые вопросы (этот прогон)
 - Переключатель менеджер->trcc — это CLI `trcc display play <id>` (опция через `theme_cmd`);
