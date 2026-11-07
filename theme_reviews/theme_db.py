@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THEMES_ROOT = os.path.join(HERE, "themes")
@@ -48,6 +49,13 @@ CREATE TABLE IF NOT EXISTS queue (
     priority REAL,
     status TEXT DEFAULT 'pending'
 );
+CREATE TABLE IF NOT EXISTS current_theme (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    tid TEXT NOT NULL,
+    brightness INTEGER DEFAULT 100,
+    video_path TEXT,
+    updated_at TEXT
+);
 """
 
 
@@ -79,6 +87,11 @@ def _migrate_brightness(conn: sqlite3.Connection) -> None:
 def media_rel_path(tid: str) -> str:
     """Relative path (to ``HERE``) of the downloaded media for *tid*."""
     return os.path.join("themes", tid, f"{tid}.mp4")
+
+
+def _now_iso() -> str:
+    """Current UTC time as an ISO-8601 string with a zone suffix."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def load_meta() -> dict[str, dict]:
@@ -144,6 +157,51 @@ def set_brightness(tid: str, pct: int) -> None:
         conn.commit()
     except sqlite3.Error:
         pass
+    finally:
+        conn.close()
+
+
+def set_current_theme(tid: str, brightness: int = 100, video_path: str | None = None) -> None:
+    """Persist the single-row "current theme" marker (the last one the app applied).
+
+    ``video_path`` is the baked brightness clip when the theme was loaded at a
+    brightness != 100, else None (the theme is played at native brightness via its
+    id).  The marker is what the manager watches to re-apply the user's last choice
+    after a daemon restart.  Never raises.
+    """
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "INSERT INTO current_theme (id, tid, brightness, video_path, updated_at) "
+            "VALUES (1, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "tid=excluded.tid, brightness=excluded.brightness, "
+            "video_path=excluded.video_path, updated_at=excluded.updated_at",
+            (str(tid), int(brightness), video_path, _now_iso()),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
+
+def get_current_theme() -> dict | None:
+    """The persisted "current theme" marker, or None when nothing was applied yet."""
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT tid, brightness, video_path, updated_at FROM current_theme WHERE id=1"
+        ).fetchone()
+        return dict(row) if row else None
+    except sqlite3.Error:
+        return None
     finally:
         conn.close()
 

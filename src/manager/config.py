@@ -28,6 +28,30 @@ def _default_palettes() -> dict[str, dict]:
 
 
 @dataclass
+class ThemeSettings:
+    """Where the manager reads the user's last-selected theme from.
+
+    The "theme settings app" (with the brightness slider) persists its current
+    choice in a SQLite DB (``db_path``); the manager watches it and re-applies the
+    theme to the panel.  ``db_path``/``trcc_json_path`` are explicit so relocating
+    that app (or trcc's data dir) is a single config edit.
+    """
+    #: Path to the settings app's ``themes.db`` (or None to disable auto-apply).
+    db_path: str | None = None
+    #: The device key the theme is applied to (matches trcc's ``devices`` key).
+    device_key: str = "0416:5408"
+    #: Path to trcc's ``trcc.json`` for verification of what is actually applied
+    #: (None -> resolve a platform default; a missing file disables verification).
+    trcc_json_path: str | None = None
+    #: Poll interval for DB/verification checks, in seconds.
+    poll_s: float = 2.0
+    #: Minimum interval between avoidable re-applies (debounce a down daemon).
+    apply_cooldown_s: float = 5.0
+    #: The trcc CLI command (executable + any leading args).
+    trcc_cmd: list[str] = field(default_factory=lambda: ["trcc"])
+
+
+@dataclass
 class Config:
     host: str = "127.0.0.1"
     port: int = 8123
@@ -43,6 +67,11 @@ class Config:
     theme_cmd: list[str] | None = None
     # Set to a token to require `Authorization: Bearer <token>` (LAN producers).
     auth_token: str | None = None
+    # Source of the "current theme" the manager keeps applied: it reads the theme
+    # settings app's own DB (db_path), watches it for changes and re-applies the
+    # last user choice to the panel after a restart.  All paths live here so the
+    # settings app can be relocated by editing one config value.
+    theme_settings: ThemeSettings = field(default_factory=ThemeSettings)
 
     @staticmethod
     def load(path: str | None) -> Config:
@@ -51,6 +80,10 @@ class Config:
             with open(path) as fh:
                 data = yaml.safe_load(fh) or {}
             for key, value in data.items():
-                if hasattr(cfg, key):
+                if not hasattr(cfg, key):
+                    continue
+                if key == "theme_settings" and isinstance(value, dict):
+                    cfg.theme_settings = ThemeSettings(**value)
+                else:
                     setattr(cfg, key, value)
         return cfg

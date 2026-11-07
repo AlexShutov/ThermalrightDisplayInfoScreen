@@ -137,3 +137,60 @@ def test_switch_failure_does_not_kill_api_last_state_holds():
     assert r.status_code == 200  # a bad trcc call is non-fatal
     assert store.read()["mode"] == "night"  # last state still published
     assert store.read()["seq"] == 1
+
+
+def test_theme_settings_watcher_applies_on_startup(tmp_path):
+    """A configured theme_settings DB drives a startup reconcile (trcc CLI)."""
+    import sqlite3
+
+    from manager.config import ThemeSettings
+
+    db = tmp_path / "themes.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        "CREATE TABLE current_theme (id INTEGER PRIMARY KEY CHECK (id=1), "
+        "tid TEXT NOT NULL, brightness INTEGER DEFAULT 100, video_path TEXT, "
+        "updated_at TEXT);"
+        "CREATE TABLE queue (tid TEXT PRIMARY KEY, priority REAL, "
+        "status TEXT DEFAULT 'pending');"
+        "CREATE TABLE themes (id TEXT PRIMARY KEY, brightness INTEGER DEFAULT 100);"
+    )
+    conn.execute("INSERT INTO current_theme (id, tid, brightness) VALUES (1, 'd046', 100)")
+    conn.commit()
+    conn.close()
+
+    trcc_json = tmp_path / "trcc.json"
+    trcc_json.write_text('{"devices":{"0416:5408":{"current_theme":"a014_brightness_adjusted_19"}}}')
+    commands: list = []
+
+    def run(args):
+        commands.append(list(args))
+
+    cfg = Config(theme_settings=ThemeSettings(
+        db_path=str(db), trcc_json_path=str(trcc_json), device_key="0416:5408",
+        trcc_cmd=["trcc"], poll_s=0.3,
+    ))
+    store = FakeStore()
+    # Entering the client runs the lifespan startup: forced reconcile -> cloud-load.
+    with TestClient(create_app(cfg, store, run=run)) as client:
+        assert client.get("/health").status_code == 200
+        assert ["trcc", "theme", "cloud-load", "0416:5408", "d046"] in commands
+
+
+def test_restart_restores_setup_and_values_from_bridge(tmp_path):
+    """A manager restart must not blank the overlay: setup/values are restored."""
+    from manager.store import AtomicStateFile
+
+    p = tmp_path / "state.json"
+    AtomicStateFile(str(p)).write({
+        "mode": "day",
+        "setup": [{"id": "cpu", "label": "CPU", "unit": "%", "min": 0, "max": 100}],
+        "values": {"cpu": 42, "fps": 60.0},
+    })
+    store = AtomicStateFile(str(p))
+    client = TestClient(create_app(Config(state_file=str(p)), store, clock=lambda: 1.0))
+    client.post("/theme", json={"mode": "night"})  # forces a fresh bridge write
+    bridge = store.read()
+    assert bridge["setup"] == [{"id": "cpu", "label": "CPU", "unit": "%", "min": 0, "max": 100}]
+    assert bridge["values"] == {"cpu": 42, "fps": 60.0}
+    assert bridge["mode"] == "night"

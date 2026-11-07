@@ -29,3 +29,15 @@ adapter:
     muted: "#8a93a6"
 # Опционально: задать токен, чтобы требовать `Authorization: Bearer <token>` (LAN-продюсеры).
 auth_token:
+# Источник «текущей темы»: менеджер читает выбор пользователя из БД приложения
+# настроек темы и переприменяет его после рестарта демона. Пути вынесены сюда,
+# чтобы перенос приложения настроек (или trcc) был правкой одного значения.
+# db_path: None -> слежение за темой отключено.
+theme_settings:
+  db_path: theme_reviews/themes.db
+  device_key: "0416:5408"
+  # trcc.json для проверки, что реально на панели; None -> платформенный дефолт.
+  trcc_json_path: ~/Library/Application Support/trcc/trcc.json
+  poll_s: 2.0
+  apply_cooldown_s: 5.0
+  trcc_cmd: [".venv-trcc/bin/trcc"]

@@ -8,9 +8,10 @@ whole contract is testable headless with ``TestClient`` + fakes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Literal, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -21,11 +22,15 @@ from hardwarescreen.ports import StateStore
 
 from .config import Config
 from .state import Gauge, ManagerState, bridge_dict, merge_values
+from .theme_source import build_reconciler
 from .trcc import TrccThemeSwitcher
 
 LOG = logging.getLogger("manager.api")
 
 PaletteMode = Literal["day", "night"]
+
+#: A subprocess runner for the theme re-applier (injectable for tests).
+RunFn = Callable[[Sequence[str]], object]
 
 
 # -- pydantic request models ---------------------------------------------
@@ -68,18 +73,33 @@ def create_app(
     switch_theme: Callable[[str], None] | None = None,
     *,
     clock: Callable[[], float] = time.monotonic,
+    run: RunFn | None = None,
 ) -> FastAPI:
     default_mode = cfg.default_mode if cfg.default_mode in ("day", "night") else "day"
+    last_bridge = store.read() or {}
     state = ManagerState(
-        mode=cast("PaletteMode", default_mode),
+        mode=cast("PaletteMode", last_bridge.get("mode", default_mode)),
         themes=dict(cfg.themes),
         adapter={m: dict(p) for m, p in cfg.adapter.items()},
     )
+    # Restore the dashboard setup/values from the persisted bridge so a restart
+    # does NOT blank the overlay (empty setup renders nothing): the panel keeps
+    # the last gauges + values until a producer posts anew.
+    state.setup = [
+        Gauge(id=g.get("id", ""), label=g.get("label", ""),
+              unit=g.get("unit", ""), min=g.get("min", 0.0),
+              max=g.get("max", 100.0))
+        for g in last_bridge.get("setup", []) if isinstance(g, dict) and g.get("id")
+    ]
+    state.values = {
+        k: float(v) for k, v in (last_bridge.get("values", {}) or {}).items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
     lock = asyncio.Lock()
     started = clock()
     # Recover the current seq from the bridge so /health never reports a stale
     # seq after a restart (the store advances seq monotonically across runs).
-    last_seq = int((store.read() or {}).get("seq", 0))
+    last_seq = int(last_bridge.get("seq", 0))
     # Build the trcc trigger from the LIVE state.themes (not the startup Config)
     # so a runtime POST /settings change is honoured by the actual switch.
     switch_theme = switch_theme or (
@@ -128,7 +148,37 @@ def create_app(
         except Exception as e:  # a bad trcc call must not kill the dashboard
             LOG.warning("theme switch failed (%s); last state holds", e)
 
-    app = FastAPI(title="HardwareScreen Theme Manager", version="0.1.0")
+    # The reconciler keeps the panel on the user's last-chosen theme; created
+    # only when a settings-app DB is configured (None otherwise -> no watcher).
+    reconciler = build_reconciler(cfg, run=run)
+
+    async def lifespan(_: FastAPI):
+        watcher = None
+        if reconciler is not None:
+            # Synchronous forced reconcile at startup so a fresh start (e.g. after
+            # ``пп``) re-applies the user's last choice even if trcc came back on a
+            # stale theme.  The background loop then only reacts to later changes.
+            try:
+                await asyncio.to_thread(reconciler.step, force=True)
+            except Exception as exc:  # a reconcile bug must not kill the worker
+                LOG.warning("theme reconcile startup step failed: %s", exc)
+
+            async def _watch_reconciler():
+                while True:
+                    try:
+                        await asyncio.to_thread(reconciler.step)
+                    except Exception as exc:  # a reconcile bug must not kill the worker
+                        LOG.warning("theme reconcile step failed: %s", exc)
+                    await asyncio.sleep(max(cfg.theme_settings.poll_s, 0.25))
+
+            watcher = asyncio.create_task(_watch_reconciler())
+        yield
+        if watcher is not None:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+
+    app = FastAPI(title="HardwareScreen Theme Manager", version="0.1.0", lifespan=lifespan)
     app.state.store = store
     app.middleware("http")(_limit_body)
 

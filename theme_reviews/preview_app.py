@@ -1021,12 +1021,12 @@ class PreviewApp(QWidget):
         self._dragging = True
         self._auto_timer.stop()
 
-    def _on_slider_moved(self, val: int) -> None:
-        i = val - 1
-        if 0 <= i < len(self.themes):
+    def _on_slider_moved(self, value: int) -> None:
+        index = value - 1
+        if 0 <= index < len(self.themes):
             self._flush_pending_brightness()
-            self.index = i
-            self._preview_index(i)
+            self.index = index
+            self._preview_index(index)
 
     def _on_slider_released(self) -> None:
         self._dragging = False
@@ -1070,6 +1070,11 @@ class PreviewApp(QWidget):
             return
         if ok:
             self._meta = theme_db.load_meta()
+            # A native (non-baked) theme load is the applied state; record it as
+            # the "current theme" so the manager can re-apply it after a restart.
+            # A baked clip (brightness != 100) that follows overwrites this in
+            # ``_apply_baked``.
+            theme_db.set_current_theme(tid, self._brightness_slider.value())
         self._set_status(f"● loaded {tid}" if ok else f"✗ load failed: {tid}")
         if ok and self._auto_enabled and not self._dragging:
             self._auto_timer.start(self._auto_ms)
@@ -1286,6 +1291,7 @@ class PreviewApp(QWidget):
                 return
             self.preview.set_theme(tid, brightness=pct)
             self.preview.set_brightness(100)
+            theme_db.set_current_theme(tid, pct, path)
         except Exception:
             pass
 
