@@ -73,7 +73,6 @@ from review import (  # noqa: E402
     load_theme,
     load_themes,
     save_favorites,
-    set_dev_brightness,
 )
 
 THUMB_DIR = os.path.expanduser(
@@ -548,15 +547,19 @@ class _PanelLoader(QThread):
     def __init__(self, device: str) -> None:
         super().__init__()
         self._device = device
-        self._job: tuple[str, int] | None = None
+        self._job: tuple[str, int, bool] | None = None
         self._seq = 0
         self._last: str | None = None
         self._stopped = False
         self._cond = threading.Condition(threading.Lock())
 
-    def request(self, tid: str) -> int:
+    def request(self, tid: str, force: bool = False) -> int:
+        """Queue *tid* (latest-wins).  ``force`` re-loads it even if it already
+        matches ``self._last`` — needed to restore the bright theme after a dimmed
+        baked clip (a plain re-request of the same theme would otherwise be
+        deduped away, stranding the dimmed clip on the panel)."""
         with self._cond:
-            self._job = (tid, self._seq)
+            self._job = (tid, self._seq, force)
             seq = self._seq
             self._seq += 1
             self._cond.notify()
@@ -571,8 +574,8 @@ class _PanelLoader(QThread):
                     break
                 job = self._job
                 self._job = None
-            tid, seq = job
-            if tid != self._last:
+            tid, seq, force = job
+            if force or tid != self._last:
                 self._last = tid
                 ok = load_theme(self._device, tid)
                 self.loaded.emit(ok, tid, seq)
@@ -1009,10 +1012,10 @@ class PreviewApp(QWidget):
             return "dark"
         return "light"
 
-    def _load_panel(self, tid: str) -> None:
+    def _load_panel(self, tid: str, force: bool = False) -> None:
         self._auto_timer.stop()
         self._set_status("loading…")
-        self._pending_seq = self._loader.request(tid)
+        self._pending_seq = self._loader.request(tid, force)
 
     def _on_slider_pressed(self) -> None:
         self._dragging = True
@@ -1140,11 +1143,17 @@ class PreviewApp(QWidget):
     def _on_brightness_debounce(self) -> None:
         """Commit brightness once the slider has been idle for ~500 ms.
 
-        The heavy work (persist + native panel dim + ffmpeg bake) fires only
-        after the user stops dragging, so a fast scroll never recomputes every
-        in-between position.  It commits to the theme that was being adjusted
-        when the slider moved (``_pending_brightness``), not the current one, so
-        a drag is never lost if the user pages on to the next theme mid-debounce.
+        The heavy work (persist + ffmpeg bake) fires only after the user stops
+        dragging, so a fast scroll never recomputes every in-between position.
+        It commits to the theme that was being adjusted when the slider moved
+        (``_pending_brightness``), not the current one, so a drag is never lost
+        if the user pages on to the next theme mid-debounce.
+
+        Внимание: мы НЕ трогаем нативную яркость панели (``set_dev_brightness``).
+        Нативная яркость применяется в trcc к ВСЕМУ кадру ПОСЛЕ композита
+        модульного оверлея (дашборда) поверх темы, поэтому она затемнила бы и
+        контролы дашборда. Яркость темы несёт только запечённый ffmpeg-клип
+        (``encode_brightness_video``) — он влияет только на видео темы.
         """
         pending = self._pending_brightness
         self._pending_brightness = None
@@ -1156,8 +1165,6 @@ class PreviewApp(QWidget):
         if pct == 100:
             self._restore_normal(tid)
             return
-        with contextlib.suppress(Exception):
-            set_dev_brightness(self.device, pct)
         self._schedule_bake(tid, pct)
 
     def _flush_pending_brightness(self) -> None:
@@ -1215,9 +1222,13 @@ class PreviewApp(QWidget):
 
     def _restore_normal(self, tid: str) -> None:
         try:
-            set_dev_brightness(self.device, 100)
+            # Re-load the theme at its native (un-baked) video.  ``force=True`` because
+            # ``_PanelLoader`` dedupes same-tid requests, and this theme is already the
+            # current one after a baked clip has been played.  We deliberately do NOT
+            # reset the panel's native brightness: that would dim the dashboard
+            # overlay/controls along with the theme (see ``_on_brightness_debounce``).
             self.preview.set_brightness(100)
-            self._load_panel(tid)
+            self._load_panel(tid, force=True)
         except Exception:
             pass
 
@@ -1265,11 +1276,15 @@ class PreviewApp(QWidget):
     def _apply_baked(self, tid: str, pct: int, path: str) -> None:
         try:
             if not load_local_video(self.device, path):
-                # The baked clip could not be played; keep the native dim rather
-                # than snapping back to 100 and showing the bright original.
+                # The baked clip could not be played; fall back to the original
+                # bright theme (force=True — the current theme is already this one
+                # after a baked clip, which the loader would dedupe away) rather
+                # than dimming the panel (native dim would also darken the dashboard
+                # overlay/controls).  See ``_on_brightness_debounce`` for why native
+                # brightness is off-limits.
+                self._load_panel(tid, force=True)
                 return
             self.preview.set_theme(tid, brightness=pct)
-            set_dev_brightness(self.device, 100)
             self.preview.set_brightness(100)
         except Exception:
             pass
@@ -1282,7 +1297,8 @@ class PreviewApp(QWidget):
             if self._brightness_debounce.isActive():
                 self._brightness_debounce.stop()
                 self._flush_pending_brightness()
-            set_dev_brightness(self.device, 100)
+            # Don't touch the panel's native brightness here either — it would dim
+            # the dashboard overlay/controls along with the theme.
             self.preview.set_brightness(100)
         except Exception:
             pass
