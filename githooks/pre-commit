@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# «Понятный код»: блокируем коммит, если среди staged-файлов есть нечитаемые имена.
+# Выполняет tools/check_names.py по файлам, которые идут в коммит. Если файла-сканера
+# нет — молча пропускаем (чтобы не ломать чужое окружение).
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+checker="$repo_root/tools/check_names.py"
+
+if [ ! -f "$checker" ]; then
+  exit 0
+fi
+
+# Только staged .py-файлы (added/modified/copied), путь относительно корня репо.
+py_files=()
+while IFS= read -r filename; do
+  case "$filename" in
+    *.py) py_files+=("$filename") ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACM)
+
+if [ "${#py_files[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+echo "【понятный код】 проверяю имена в staged-файлах..."
+cd "$repo_root"
+exec python3 "$checker" "${py_files[@]}"
