@@ -82,7 +82,7 @@ COMPOSITE_RINGS_MARGIN_MM = 2.0
 RING_GAP_MM = 1.0
 # Радиус внутренней границы самого внутреннего кольца, мм (маленький центр →
 # кольца толстые, почти на весь круг).
-RINGS_INNER_RADIUS_MM = 5.0
+RINGS_INNER_RADIUS_MM = 7.0
 # Доля полу-стороны, до которой заполняются кольца: близко к 1, чтобы кольца были
 # большими (вплоть до отступа ``COMPOSITE_RINGS_MARGIN_MM`` от краёв зоны).
 COMPOSITE_RINGS_OUTER_FRACTION = 0.96
