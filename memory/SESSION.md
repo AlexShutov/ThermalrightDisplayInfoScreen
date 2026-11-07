@@ -46,6 +46,19 @@
   локального src не печётся, GUI-preview не обновляется в фолбэк-ветке, возможный «loading…» при
   дедуп-запросе). Программа `preview_app.py` перезапущена (pid 75595). **НЕ ЗАКОММИЧЕНО.**
 
+## Консолидация индикаторов — уже сделано (не трогать)
+Проверено (код + `gh repo list AlexShutov`): оба индикатора УЖЕ в одном репозитории `DashboardWidgets`
+(сабмодуль `DashboardWidgets/`, `github.com/AlexShutov/DashboardWidgets`), как соседние под-пакеты:
+`DashboardWidgets/src/activityrings/` (кольцевой) и `DashboardWidgets/src/activity_linear_indicator/`
+(линейный, добавлен коммитом `0733a82` при переименовании `ActivityProgressRingsQt` → `DashboardWidgets`).
+Отдельного «репозитория линейного индикатора» НЕТ; пустого репозитория для удаления тоже нет.
+В главном репо `src/hardwarescreen/adapter/linear_dashboard.py` — это app-рендерер дашборда (MIT), он лишь
+импортирует `activity_linear_indicator` из сабмодуля, а не является отдельным индикатором-репозиторием.
+Ссылки в приложении (`activityrings`, `activity_linear_indicator`) уже указывают на под-пакеты сабмодуля.
+**Решение пользователя (07.11): переименовывать/удалять репозитории НЕ нужно** — структура консолидирована.
+Отдельного `AGENTS.md` в `DashboardWidgets` нет; «более продвинутое окружение» там — pyproject с
+ruff/mypy/pytest-конфигом (`tools/qlinear_preview.py`, `tools/qrings_preview.py`, `docs/linear*` и т.д.).
+
 ## Открытые вопросы (этот прогон)
 - Переключатель менеджер->trcc — это CLI `trcc display play <id>` (опция через `theme_cmd`);
   альтернатива через REST-API trcc всё ещё открыта.
