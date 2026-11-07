@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 import threading
 import time
 
@@ -30,73 +29,7 @@ from manager.store import AtomicStateFile
 log = logging.getLogger("hardwarescreen.dashboard")
 
 
-# Собственная логика выделения колец: один активный круг, без общего
-# ``SelectionController`` из ``common.selection`` (который считает число выбранных).
-_RING_SELECTION_RNG = random.Random()
-
-
-class _RingSelection:
-    """Подсветка одного круга за окно данных (своя простая логика для колец).
-
-    Не переиспользует ``common.selection``: не считает число выбранных кругов и не
-    меняет толщину.  При смене окна данных плавно переносит подсветку с одного
-    кольца на другое (предыдущее гаснет, новое вспыхивает).  ``focus`` — per-ring
-    значения 0..1.
-    """
-
-    def __init__(self, transition_s: float) -> None:
-        self._transition_s = max(0.01, float(transition_s))
-        self._active_index = 0
-        # Кольцо, которое гаснет при смене активного (``None`` — ничего не гаснет).
-        self._fading_index: int | None = None
-        # Помечаем, что актив уже выбирался: на САМОМ первом окне ничего не гаснет.
-        self._has_active = False
-        self._changed_at = 0.0
-        self._enabled = False
-
-    @property
-    def enabled(self) -> bool:
-        return self._enabled
-
-    @enabled.setter
-    def enabled(self, value: bool) -> None:
-        self._enabled = bool(value)
-
-    def window_changed(self, now: float, count: int) -> None:
-        """Новое окно данных: выбираем свежий активный круг (ровно один)."""
-        if not self._enabled or count <= 0:
-            return
-        if self._has_active:
-            # Прежний активный круг гаснет (фокус 1 -> 0), новый вспыхивает.
-            self._fading_index = self._active_index
-        else:
-            self._fading_index = None
-        if count <= 1:
-            self._active_index = 0
-        else:
-            candidates = [index for index in range(count) if index != self._active_index]
-            self._active_index = _RING_SELECTION_RNG.choice(candidates)
-        self._has_active = True
-        self._changed_at = now
-
-    def focus(self, now: float, count: int) -> list[float]:
-        """Per-ring focus: активный круг вспыхивает, прежний плавно гаснет."""
-        focus = [0.0] * count
-        if not self._enabled or count <= 0:
-            return focus
-        from common.easing import ease_out_cubic  # noqa: PLC0415
-
-        progress = min(1.0, max(0.0, (now - self._changed_at) / self._transition_s))
-        eased = ease_out_cubic(progress)
-        if 0 <= self._active_index < count:
-            focus[self._active_index] = eased
-        if (
-            self._fading_index is not None
-            and self._fading_index != self._active_index
-            and 0 <= self._fading_index < count
-        ):
-            focus[self._fading_index] = 1.0 - eased
-        return focus
+# Вспомогательные функции чтения env-настроек композита.
 
 
 _KEY = "dashboard"
@@ -296,26 +229,32 @@ class CompositeDashboardRenderer:
         # (по умолчанию), с возможностью отдельно переопределить через env.
         self._ring_start_corner = ring_start_corner_fraction
         self._ring_end_corner = ring_end_corner_fraction
-        # Драйвер выделения колец — СОБСТВЕННАЯ простая логика (не общий
-        # ``SelectionController`` из ``common.selection``): подсвечивает один круг на
-        # каждое окно данных, не считает число выбранных и не меняет толщину.
-        self._ring_selection = _RingSelection(RING_SELECTION_TRANSITION_S)
-        self._rings_signature: object | None = None
+        # Общий драйвер выделения для колец И линейного (одинаковые случайные датчики
+        # на обоих графиках).  Создаётся лениво при первом рендере (``common.selection``
+        # импортируем позже — он headless, но живёт в сабмодуле).
+        self._selection = None
+        self._selection_signature: object | None = None
 
     def __call__(self, setup, values, palette, size, background=None) -> bytes:
         pal = _palette(palette or {})
         canvas = Image.new("RGBA", self._size, (0, 0, 0, 0))
         if (setup or []) and (values or {}):
             now = time.monotonic()
-            # Левый ряд (линейный индикатор) показывает ВСЕ сенсоры (из ``setup`` плюс те,
-            # что есть только в ``values``); кольца справа — только первые ``N`` из них.
+            # Левый ряд показывает ВСЕ сенсоры (из ``setup`` плюс те, что есть только в
+            # ``values``); кольца справа — только первые ``N`` из них.  ВЫДЕЛЕНИЕ общее:
+            # случайные датчики выбираются из набора КОЛЕЦ (первые ``N``), чтобы один и тот
+            # же столбец можно было подсветить и на линейном, и на кольце.
             shared_gauges = self._left_gauges(setup, values)
-            raw_left = self._linear(shared_gauges, values, palette, self._left_size, None)
+            rings_gauges = self._rings_gauges(shared_gauges)
+            ring_focus = self._compute_ring_focus(rings_gauges, values, now)
+            linear_focus = self._pad_ring_focus(ring_focus, len(shared_gauges))
+            raw_left = self._linear(
+                shared_gauges, values, palette, self._left_size, None, focus=linear_focus
+            )
             left_img = self._bytes_to_image(raw_left, self._left_size)
             if left_img is not None:
                 canvas.alpha_composite(left_img, (0, 0))
-            rings_gauges = self._rings_gauges(shared_gauges)
-            rings_img = self._render_rings(rings_gauges, values, pal, now)
+            rings_img = self._render_rings(rings_gauges, values, pal, ring_focus)
             if rings_img is not None:
                 canvas.alpha_composite(rings_img, (self._rings_x, self._rings_y))
         return canvas.tobytes()
@@ -368,7 +307,35 @@ class CompositeDashboardRenderer:
             return list(shared_gauges[: self._ring_max_gauges])
         return list(shared_gauges)
 
-    def _render_rings(self, setup, values, pal, now) -> Image.Image | None:
+    def _compute_ring_focus(self, rings_gauges, values, now):
+        """Общий фокус выделения (2 случайных датчика) для колец И линейного.
+
+        Выбираем случайные датчики из набора КОЛЕЦ (первые ``N``) — так один и тот же
+        столбец всегда можно подсветить и на линейном, и на кольце (одинаковое
+        выделение на обоих графиках).  Новое окно открывается при смене состава
+        датчиков или их значений.
+        """
+        from common.selection import SelectionController  # noqa: PLC0415
+
+        count = len(rings_gauges)
+        if count <= 0:
+            return []
+        if self._selection is None:
+            self._selection = SelectionController(
+                transition_s=RING_SELECTION_TRANSITION_S, select_count=2
+            )
+        sig = self._ring_content_signature(rings_gauges, values)
+        if sig != self._selection_signature:
+            self._selection_signature = sig
+            self._selection.enabled = True
+            self._selection.advance(now, count)
+        return self._selection.focus(now, count)
+
+    def _pad_ring_focus(self, ring_focus, total):
+        """Дополняет фокус колец нулями до числа столбцов линейного (индексы совпадают)."""
+        return list(ring_focus) + [0.0] * max(0, total - len(ring_focus))
+
+    def _render_rings(self, setup, values, pal, focus) -> Image.Image | None:
         try:
             from activityrings.rings import render_gauge_rings
 
@@ -399,12 +366,9 @@ class CompositeDashboardRenderer:
         if not entries:
             return None
         count = len(entries)
-        sig = self._ring_content_signature(setup, values)
-        if sig != self._rings_signature:
-            self._rings_signature = sig
-            self._ring_selection.enabled = count > 0
-            self._ring_selection.window_changed(now, count)
-        focus = self._ring_selection.focus(now, count)
+        # Фокус приходит из общего драйвера (см. ``_compute_ring_focus``); подгоняем
+        # под число колец на случай рассинхрона.
+        focus = list(focus[:count]) + [0.0] * max(0, count - len(focus))
         # Порядок колец «из центра наружу»: первый датчик линейного (слева) — центральное
         # (внутреннее) кольцо, последний — внешнее.  Раскладчик колец делает первым
         # внешнее кольцо, поэтому разворачиваем и порядок колец, и фокус.

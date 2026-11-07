@@ -195,8 +195,9 @@ class LinearDashboardRenderer:
         palette: dict,
         size: tuple[int, int],
         background=None,
+        focus: list[float] | None = None,
     ) -> bytes:
-        return self.render(setup, values, palette, size, background)
+        return self.render(setup, values, palette, size, background, focus=focus)
 
     def _specs(self, setup: list[dict], values: dict, palette: dict) -> list[dict]:
         specs: list[dict] = []
@@ -260,6 +261,7 @@ class LinearDashboardRenderer:
         palette: dict,
         size: tuple[int, int],
         background=None,
+        focus: list[float] | None = None,
     ) -> bytes:
         """Render one eased frame as raw bytes (RGBA ``w*h*4`` for the transparent
         overlay; the Pillow-fallback images stay ``w*h*3``)."""
@@ -286,12 +288,17 @@ class LinearDashboardRenderer:
         # setup/values/palette) чередует select/skip и держит выделение до следующего
         # окна (~5 с), а не мигает на собственном таймере.  Значения при этом «добегают»
         # до цели за ``_vtween`` (0.3 с) и держатся до следующего окна данных.
-        content_signature = self._content_signature(setup or [], values or {}, palette or {})
-        selection_now = time.monotonic()
-        if content_signature != self._last_content_signature:
-            self._last_content_signature = content_signature
-            self._advance_selection(selection_now, n)
-        focus = self._selection_focus(selection_now, n)
+        # Если передан ``focus`` (композитный режим: выделение общее с кольцами) —
+        # используем его как есть и внутреннее выделение не двигаем.
+        if focus is None:
+            content_signature = self._content_signature(setup or [], values or {}, palette or {})
+            selection_now = time.monotonic()
+            if content_signature != self._last_content_signature:
+                self._last_content_signature = content_signature
+                self._advance_selection(selection_now, n)
+            focus = self._selection_focus(selection_now, n)
+        else:
+            focus = list(focus[:n]) + [0.0] * max(0, n - len(focus))
         # The measured geometry is always constant (equal height + gap); selection
         # is a render-side effect (dim the others, grow + foreground the selected).
         layout = self._layout.measure(

@@ -230,29 +230,51 @@ def test_composite_renderer_empty_setup_is_safe(composite):
     assert len(frame) == size[0] * size[1] * 4
 
 
-def test_composite_rings_selection_driver(composite):
-    """Собственный драйвер колец подсвечивает один круг; при смене окна актив переносится."""
-    CompositeDashboardRenderer, _ = composite
+def test_composite_rings_selection_driver(composite, monkeypatch):
+    """Общее выделение: один драйвер выбирает 2 случайных датчика из набора колец и
+    отдаёт ОДИН и тот же ``focus`` и линейному, и кольцам (одинаковые столбцы)."""
+    import time  # noqa: PLC0415
+
+    import activityrings.rings as rings_mod  # noqa: PLC0415
+
     from hardwarescreen.adapter.linear_dashboard import LinearDashboardRenderer  # noqa: PLC0415
+
+    CompositeDashboardRenderer, _ = composite
+    captured: dict[str, list[float]] = {}
+
+    def spy_rings(entries, size, progress=None, focus=None, **kwargs):
+        from PIL import Image
+
+        captured["ring_focus"] = list(focus or [])
+        return Image.new("RGBA", (int(size[0]), int(size[1])), (0, 0, 0, 0))
+
+    monkeypatch.setattr(rings_mod, "render_gauge_rings", spy_rings)
 
     size = (1920, 440)
     setup = [
-        {"id": "cpu", "label": "CPU", "min": 0, "max": 100, "unit": "%"},
-        {"id": "gpu", "label": "GPU", "min": 0, "max": 100, "unit": "%"},
-        {"id": "ram", "label": "RAM", "min": 0, "max": 200, "unit": "GB"},
+        {"id": f"g{i}", "label": f"G{i}", "min": 0, "max": 100, "unit": "%"}
+        for i in range(6)
     ]
-    linear = LinearDashboardRenderer(
-        (1438, 440), background=None, fps=8.0, layout=None
+    values = {g["id"]: 50 + i for i, g in enumerate(setup)}
+    linear = LinearDashboardRenderer((1438, 440), background=None, fps=8.0, layout=None)
+    original_render = linear.render
+
+    def spy_linear(*args, **kwargs):
+        captured["linear_focus"] = list(kwargs.get("focus") or [])
+        return original_render(*args, **kwargs)
+
+    linear.render = spy_linear  # type: ignore[method-assign]
+
+    renderer = CompositeDashboardRenderer(
+        linear, size, px_per_mm=6.86, value_palette_on=True, ring_max_gauges=4
     )
-    renderer = CompositeDashboardRenderer(linear, size, px_per_mm=6.86, value_palette_on=True)
-
-    # Первое окно данных: выделение включено, активный индекс в пределах числа колец.
-    renderer(setup, {"cpu": 50, "gpu": 60, "ram": 40}, {}, size, None)
-    assert renderer._ring_selection.enabled is True
-    first_active = renderer._ring_selection._active_index
-    assert first_active in (0, 1, 2)
-
-    # Новое окно данных (значения изменились): активный круг переносится (или остаётся
-    # в допустимых пределах), т.е. драйвер продолжает работать по своей логике.
-    renderer(setup, {"cpu": 55, "gpu": 65, "ram": 45}, {}, size, None)
-    assert renderer._ring_selection._active_index in (0, 1, 2)
+    renderer(setup, values, {}, size, None)
+    # Выбор идёт из множества, присутствующего на ОБОИХ графиках (первые 4 кольца).
+    assert set(renderer._selection.active_indices) <= {0, 1, 2, 3}
+    assert len(renderer._selection.active_indices) == 2
+    # Линейный и кольца получают ОДИН и тот же фокус по каждому датчику (первые 4).
+    assert captured["linear_focus"][:4] == list(reversed(captured["ring_focus"]))
+    assert all(v == 0.0 for v in captured["linear_focus"][4:])
+    # Когда переход оканчивается — ровно 2 кольца в фокусе (фокус ~1).
+    later_focus = renderer._selection.focus(time.monotonic() + 1.0, 4)
+    assert sum(1 for v in later_focus if v > 0.5) == 2
